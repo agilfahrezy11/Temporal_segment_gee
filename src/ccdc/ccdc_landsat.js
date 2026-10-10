@@ -101,3 +101,57 @@ exports.getSyntheticLandsatStack = function(ccdcOutput, targetDateFractional, ad
 
   return stack;
 };
+
+//Function to extrapolate the ccdc, minimizing missing pixels value
+exports.nearestSegment = function(ccdc, t) {
+  t = ee.Number(t);
+  var tS = ccdc.select('tStart'), tE = ccdc.select('tEnd');
+  var dist = tS.subtract(t).max(tE.multiply(-1).add(t)).max(0);   // 0 if t inside
+  return {
+    idx: dist.multiply(-1).arrayArgmax().arrayGet([0]),
+    gap: dist.arrayReduce(ee.Reducer.min(), [0]).arrayGet([0]).rename('gap_years'),
+    tS: tS, tE: tE
+  };
+};
+
+exports.fillIsolated = function(img, minNeighbors) {              // e.g. 5 of 8
+  var n = img.select(0).mask().reduceNeighborhood({
+    reducer: ee.Reducer.sum(), kernel: ee.Kernel.square(1)});
+  var med = img.focalMedian(1, 'square', 'pixels');
+  return img.unmask(med.updateMask(n.gte(minNeighbors)));
+};
+
+exports.getSyntheticLandsatStack = function(ccdc, t, addIndices, tolYears) {
+  addIndices = addIndices !== undefined ? addIndices : true;
+  tolYears = tolYears !== undefined ? tolYears : 1;
+  t = ee.Number(t);
+  var seg = exports.nearestSegment(ccdc, t);
+
+  // clamp only the trend term; harmonics keep the target date's season
+  var tc = ee.Image(t).max(seg.tS.arrayGet(seg.idx)).min(seg.tE.arrayGet(seg.idx));
+  var w = 2 * Math.PI;
+  var terms = ee.Image.cat([
+    ee.Image(1), tc,
+    ee.Image.constant(t.multiply(w).cos()),   ee.Image.constant(t.multiply(w).sin()),
+    ee.Image.constant(t.multiply(2*w).cos()), ee.Image.constant(t.multiply(2*w).sin()),
+    ee.Image.constant(t.multiply(3*w).cos()), ee.Image.constant(t.multiply(3*w).sin())
+  ]).toArray();
+
+  var names = ['BLUE','GREEN','RED','NIR','SWIR1','SWIR2'];
+  var bands = names.map(function(b) {
+    var c = ccdc.select(b + '_coefs')
+      .arraySlice(0, seg.idx, seg.idx.add(1)).arrayProject([1]);
+    return c.multiply(terms).arrayReduce(ee.Reducer.sum(), [0])
+      .arrayGet([0]).divide(10000).rename(b.toLowerCase());
+  });
+  var stack = ee.Image.cat(bands);
+
+  // plausibility bounds are lenient: dark water can be slightly negative in SWIR
+  var valid = seg.gap.lte(tolYears)
+    .and(stack.reduce(ee.Reducer.min()).gt(-0.05))
+    .and(stack.reduce(ee.Reducer.max()).lt(1));
+  stack = exports.fillIsolated(stack.updateMask(valid), 5);
+
+  if (addIndices) { /* your existing NDVI / NDWI / NDBI block */ }
+  return stack.addBands(seg.gap);
+};
