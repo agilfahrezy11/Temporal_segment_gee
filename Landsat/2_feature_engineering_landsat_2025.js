@@ -18,26 +18,21 @@ var landsat_dry = ccdc_module.getSyntheticLandsatStack(landsat_ccdc, 2025.20, fa
 
 //Band Harmonics
 function getAllHarmonics(ccdcImg, t, bands) {
-  t = ee.Number(t);
-  // 2D mask matching active segment at target time t
-  var mask2D = ccdcImg.select('tStart').lte(t)
-                 .and(ccdcImg.select('tEnd').gte(t))
-                 .toArray(0).toArray(1);
-  var harmonicImages = bands.map(function(bandName) {
-    var seg = ccdcImg.select(bandName + '_coefs').arrayMask(mask2D).arraySlice(0, 0, 1);
-    // Extract 1st harmonic terms (annual sine and cosine coefficients)
-    var a1 = seg.arraySlice(1, 2, 3).arrayProject([0]).arrayFlatten([[bandName + '_a1']]).divide(10000);
-    var b1 = seg.arraySlice(1, 3, 4).arrayProject([0]).arrayFlatten([[bandName + '_b1']]).divide(10000);
-    var amp = a1.hypot(b1).rename(bandName + '_amp');
-    var phase = b1.atan2(a1).rename(bandName + '_phase');
-    return ee.Image.cat([amp, phase]);
+  var seg = ccdc_module.nearestSegment(ccdcImg, t);
+  var imgs = bands.map(function(b) {
+    var c = ccdcImg.select(b + '_coefs')
+      .arraySlice(0, seg.idx, seg.idx.add(1)).arrayProject([1]);
+    var a1 = c.arrayGet([2]).divide(10000);
+    var b1 = c.arrayGet([3]).divide(10000);
+    return ee.Image.cat([a1.hypot(b1).rename(b + '_amp'),
+                         b1.atan2(a1).rename(b + '_phase')]);
   });
-  return ee.Image(harmonicImages);
+  return ee.Image.cat(imgs).updateMask(seg.gap.lte(1));
 }
 
 // Extract harmonics for critical bands
 //(2)
-var multiHarmonics2025 = getAllHarmonics(landsat_ccdc, 2025.5, ['NIR', 'SWIR1', 'RED']); 
+var multiHarmonics2025 = getAllHarmonics(landsat_ccdc, 2025.65, ['NIR', 'SWIR1', 'RED']); 
 /**
  * Helper function: Generates synthetic image at target time and computes dynamic indices
  */
@@ -160,7 +155,7 @@ var landsat_wet_25 = ['B2_wet', 'B3_wet', 'B4_wet', 'B6_wet', 'B7_wet']
 var landsat_dry_2025 = ['B3_dry', 'B4_dry','B5_dry','B6_dry', 'B7_dry']
 var index_2025_wet = ['AWEIsh_wet', 'BLFEI_wet', 'DBSI_wet', 'EVI_wet', 'GBNDVI_wet','MNDWI_wet','NDVI_wet']
 var index_2025_dry = ['BLFEI_dry',  'DBSI_dry', 'GBNDVI_dry', 'MBI_dry', 'MNDWI_dry', 'NDMI_dry', 'NDVI_dry', 'SWIR1_amp',]
-
+Map.addLayer(feature_2025.select(landsat_wet_25), {}, 'Landsat wet Season')
 //export to asset
 Export.image.toAsset({
   image:  feature_2025.select(landsat_wet_25),
