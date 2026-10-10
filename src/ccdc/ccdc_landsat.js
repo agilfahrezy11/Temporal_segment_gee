@@ -1,8 +1,12 @@
 /**
- * Landsat Continous Change Detection and Classification Pipeline
+ * Landsat Continuous Change Detection and Classification Pipeline
+ *
+ * Coefficient units differ by source:
+ *   - own run (this module's getLandsatTimeSeries feeds CCDC in 0..10,000)  -> coefScale = 10000
+ *   - GOOGLE/GLOBAL_CCDC/V1 (coefficients are already 0..1 reflectance)     -> coefScale = 1
  */
 
-// 1. Prepare Harmonized Landsat 8 & 9 Collection for CCDC (0-10000 range)
+// 1. Prepare Landsat 8 & 9 Collection for CCDC (0-10000 range)
 exports.getLandsatTimeSeries = function(roi, startDate, endDate) {
   startDate = startDate || '2020-01-01';
   endDate = endDate || '2025-12-31';
@@ -38,7 +42,7 @@ exports.getLandsatTimeSeries = function(roi, startDate, endDate) {
   return l8.merge(l9);
 };
 
-// 2. Execute CCDC using Google Global CCDC Hyperparameters
+// 2. Execute CCDC using Google Global CCDC hyperparameters
 exports.runLandsatCCDC = function(lsCollection) {
   return ee.Algorithms.TemporalSegmentation.Ccdc({
     collection: lsCollection,
@@ -53,60 +57,11 @@ exports.runLandsatCCDC = function(lsCollection) {
   });
 };
 
-// 3. Synthesize Reflectance Stack from CCDC Output
-exports.getSyntheticLandsatStack = function(ccdcOutput, targetDateFractional, addIndices) {
-  addIndices = addIndices !== undefined ? addIndices : true;
-  var bands = ['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2'];
-  var t = ee.Number(targetDateFractional);
-
-  var tStart = ccdcOutput.select('tStart');
-  var tEnd = ccdcOutput.select('tEnd');
-
-  // Segment selection mask
-  var segmentMask = tStart.lte(t).and(tEnd.gte(t));
-  var segmentMask2D = segmentMask.toArray(0).toArray(1);
-
-  // Harmonic terms matrix [8 x 1]
-  var omega = 2.0 * Math.PI;
-  var termList = [
-    ee.Image.constant(1),
-    ee.Image.constant(t),
-    ee.Image.constant(t.multiply(omega).cos()),
-    ee.Image.constant(t.multiply(omega).sin()),
-    ee.Image.constant(t.multiply(omega * 2).cos()),
-    ee.Image.constant(t.multiply(omega * 2).sin()),
-    ee.Image.constant(t.multiply(omega * 3).cos()),
-    ee.Image.constant(t.multiply(omega * 3).sin())
-  ];
-  var termsArray = ee.Image(termList).toArray().toArray(1);
-
-  var syntheticBands = bands.map(function(band) {
-    var coefs = ccdcOutput.select(band + '_coefs'); 
-    var activeCoefs = coefs.arrayMask(segmentMask2D);
-    var segCoefs = activeCoefs.arraySlice(0, 0, 1);
-    var fitArray = segCoefs.matrixMultiply(termsArray);
-    
-    // Convert 0..10,000 integer range back to 0..1 reflectance
-    return fitArray.arrayProject([0]).arrayFlatten([[band.toLowerCase()]]).divide(10000);
-  });
-
-  var stack = ee.Image(syntheticBands);
-
-  if (addIndices) {
-    var ndvi = stack.normalizedDifference(['nir', 'red']).rename('NDVI');
-    var ndwi = stack.normalizedDifference(['green', 'nir']).rename('NDWI');
-    var ndbi = stack.normalizedDifference(['swir1', 'nir']).rename('NDBI');
-    stack = stack.addBands([ndvi, ndwi, ndbi]);
-  }
-
-  return stack;
-};
-
-//Function to extrapolate the ccdc, minimizing missing pixels value
+// 3. Nearest segment in time, per pixel (index + distance in years)
 exports.nearestSegment = function(ccdc, t) {
   t = ee.Number(t);
   var tS = ccdc.select('tStart'), tE = ccdc.select('tEnd');
-  var dist = tS.subtract(t).max(tE.multiply(-1).add(t)).max(0);   // 0 if t inside
+  var dist = tS.subtract(t).max(tE.multiply(-1).add(t)).max(0);   // 0 if t is inside a segment
   return {
     idx: dist.multiply(-1).arrayArgmax().arrayGet([0]),
     gap: dist.arrayReduce(ee.Reducer.min(), [0]).arrayGet([0]).rename('gap_years'),
@@ -114,6 +69,7 @@ exports.nearestSegment = function(ccdc, t) {
   };
 };
 
+// 4. Fill isolated holes from a 3x3 median, only where enough neighbours are valid
 exports.fillIsolated = function(img, minNeighbors) {              // e.g. 5 of 8
   var n = img.select(0).mask().reduceNeighborhood({
     reducer: ee.Reducer.sum(), kernel: ee.Kernel.square(1)});
@@ -121,9 +77,13 @@ exports.fillIsolated = function(img, minNeighbors) {              // e.g. 5 of 8
   return img.unmask(med.updateMask(n.gte(minNeighbors)));
 };
 
-exports.getSyntheticLandsatStack = function(ccdc, t, addIndices, tolYears) {
+// 5. Synthetic reflectance stack at fractional-year t.
+//    tolYears : max distance (years) to the nearest segment
+//    coefScale: 10000 for the own run, 1 for GOOGLE/GLOBAL_CCDC/V1
+exports.getSyntheticLandsatStack = function(ccdc, t, addIndices, tolYears, coefScale) {
   addIndices = addIndices !== undefined ? addIndices : true;
   tolYears = tolYears !== undefined ? tolYears : 1;
+  coefScale = coefScale !== undefined ? coefScale : 10000;
   t = ee.Number(t);
   var seg = exports.nearestSegment(ccdc, t);
 
@@ -133,16 +93,16 @@ exports.getSyntheticLandsatStack = function(ccdc, t, addIndices, tolYears) {
   var terms = ee.Image.cat([
     ee.Image(1), tc,
     ee.Image.constant(t.multiply(w).cos()),   ee.Image.constant(t.multiply(w).sin()),
-    ee.Image.constant(t.multiply(2*w).cos()), ee.Image.constant(t.multiply(2*w).sin()),
-    ee.Image.constant(t.multiply(3*w).cos()), ee.Image.constant(t.multiply(3*w).sin())
+    ee.Image.constant(t.multiply(2 * w).cos()), ee.Image.constant(t.multiply(2 * w).sin()),
+    ee.Image.constant(t.multiply(3 * w).cos()), ee.Image.constant(t.multiply(3 * w).sin())
   ]).toArray();
 
-  var names = ['BLUE','GREEN','RED','NIR','SWIR1','SWIR2'];
+  var names = ['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2'];
   var bands = names.map(function(b) {
     var c = ccdc.select(b + '_coefs')
       .arraySlice(0, seg.idx, seg.idx.add(1)).arrayProject([1]);
     return c.multiply(terms).arrayReduce(ee.Reducer.sum(), [0])
-      .arrayGet([0]).divide(10000).rename(b.toLowerCase());
+      .arrayGet([0]).divide(coefScale).rename(b.toLowerCase());
   });
   var stack = ee.Image.cat(bands);
 
@@ -152,6 +112,31 @@ exports.getSyntheticLandsatStack = function(ccdc, t, addIndices, tolYears) {
     .and(stack.reduce(ee.Reducer.max()).lt(1));
   stack = exports.fillIsolated(stack.updateMask(valid), 5);
 
-  if (addIndices) { /* your existing NDVI / NDWI / NDBI block */ }
+  if (addIndices) {
+    stack = stack.addBands([
+      stack.normalizedDifference(['nir', 'red']).rename('NDVI'),
+      stack.normalizedDifference(['green', 'nir']).rename('NDWI'),
+      stack.normalizedDifference(['swir1', 'nir']).rename('NDBI')
+    ]);
+  }
+
   return stack.addBands(seg.gap);
+};
+
+// 6. First-harmonic amplitude and phase of the nearest segment
+exports.getHarmonics = function(ccdc, t, bands, tolYears, coefScale) {
+  tolYears = tolYears !== undefined ? tolYears : 1;
+  coefScale = coefScale !== undefined ? coefScale : 10000;
+  var seg = exports.nearestSegment(ccdc, t);
+  var imgs = bands.map(function(b) {
+    var c = ccdc.select(b + '_coefs')
+      .arraySlice(0, seg.idx, seg.idx.add(1)).arrayProject([1]);   // 8 coefficients
+    var a1 = c.arrayGet([2]).divide(coefScale);                    // cos(wt)
+    var b1 = c.arrayGet([3]).divide(coefScale);                    // sin(wt)
+    return ee.Image.cat([
+      a1.hypot(b1).rename(b + '_amp'),
+      b1.atan2(a1).rename(b + '_phase')
+    ]);
+  });
+  return ee.Image.cat(imgs).updateMask(seg.gap.lte(tolYears));
 };
