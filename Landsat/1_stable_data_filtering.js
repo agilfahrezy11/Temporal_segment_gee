@@ -1,68 +1,53 @@
-//define the AOI
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry()
-//Load the two CCDC Assets
-var ccdc_old = ee.ImageCollection('GOOGLE/GLOBAL_CCDC/V1').filterBounds(aoi).mosaic(); // 1999-2019
-var ccdc_new = ee.Image('projects/ee-agilfahrezy60/assets/Landsat_CCDC_TL/CCDC_TL_2020_2025_Landsat'); // 2020-2025
-var ccdc_module = require('users/rg2icraf/Luma:ccdc_landsat');
+// Stable 2025 training samples from one continuous Landsat CCDC model.
+// Update this to the asset exported by the unified 2000-2025 CCDC workflow.
+var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry();
+var unifiedCcdc = ee.Image(
+  'projects/ee-rg2/assets/Landsat_CCDC_TL/CCDC_TL_2000_2025_Landsat'
+).clip(aoi);
+
+var trainingSamples = ee.FeatureCollection(
+  'projects/ee-rg2/assets/Samples/Samples_TL_hierarchy_2025_v1'
+);
+
 /**
- * Check for structural breaks within a specific time window
- * Returns an Image: 1 if ANY break occurred in window, 0 if clean/stable
+ * Returns 1 where no CCDC breakpoint occurs in the given time window and 0
+ * otherwise. This is a spectral-stability flag, not proof that the ecological
+ * class has remained unchanged.
  */
-function checkBreakInPeriod(ccdcImg, startYear, endYear) {
-  var tBreak = ccdcImg.select('tBreak'); // 1D Array Image of break dates
-  
-  // 1. Create a boolean mask: 1 where break date falls inside [startYear, endYear], 0 otherwise
-  var maskInWindow = tBreak.gte(startYear).and(tBreak.lte(endYear));
-  
-  // 2. Filter the tBreak array to keep ONLY break dates that occurred inside the window
-  var breaksInWindow = tBreak.arrayMask(maskInWindow);
-  
-  // 3. Count how many breaks happened inside the window
-  var numBreaks = breaksInWindow.arrayLength(0);
-  
-  // 4. Return 1 if number of breaks > 0 (Unstable), else 0 (Stable)
-  return numBreaks.gt(0).rename('has_break');
+function stableInPeriod(ccdcImage, startYear, endYear) {
+  var tBreak = ccdcImage.select('tBreak');
+  var breaksInWindow = tBreak.arrayMask(
+    tBreak.gte(startYear).and(tBreak.lte(endYear))
+  );
+  var hasBreak = breaksInWindow.arrayLength(0).gt(0);
+  return hasBreak.not().rename('is_stable');
 }
-/**
- * Check 3: Spectral Boundary Continuity Check (2019.9 vs 2020.1)
- * Evaluates whether a hidden land change happened right at the split boundary.
- */
-// Evaluate breaks in both assets
-var break_2005_2019 = checkBreakInPeriod(ccdc_old, 2005.0, 2019.9);
-var break_2020_2025 = checkBreakInPeriod(ccdc_new, 2020.0, 2025.9);
 
-var synth_2019 = ccdc_module.getSyntheticLandsatStack(ccdc_old, 2019.9);
-var synth_2020 = ccdc_module.getSyntheticLandsatStack(ccdc_new, 2020.1);
+// No product-boundary comparison is needed: all years come from one CCDC run.
+var isStable = stableInPeriod(unifiedCcdc, 2000.0, 2025.99);
 
-// Calculate spectral difference across key bands (e.g., NIR and SWIR1)
-var diffNIR = synth_2019.select('nir').subtract(synth_2020.select('nir')).abs();
-var diffSWIR = synth_2019.select('swir1').subtract(synth_2020.select('swir1')).abs();
+// reduceRegions preserves the original training-feature properties and
+// geometries while adding the is_stable value sampled from the CCDC mask.
+var samplesWithStability = isStable.reduceRegions({
+  collection: trainingSamples,
+  reducer: ee.Reducer.first().setOutputs(['is_stable']),
+  scale: 30,
+  tileScale: 4
+});
 
-// Threshold: If reflectance jumped by > 0.08 (~8%), treat as boundary break
-var boundaryShift = diffNIR.gt(0.08).or(diffSWIR.gt(0.08));
+var stableTrainingPoints = samplesWithStability
+  .filter(ee.Filter.eq('is_stable', 1));
 
-/**
- * Combine all conditions into a single Stability Mask
- * 1 = Stable across 2005-2025
- * 0 = Unstable / Changed
- */
-var isStable = break_2005_2019.eq(0)
-  .and(break_2020_2025.eq(0))
-  .and(boundaryShift.eq(0))
-  .rename('is_stable');
+print('Original 2025 sample count:', trainingSamples.size());
+print('Stable 2000-2025 sample count:', stableTrainingPoints.size());
+print('Stable samples by class:', stableTrainingPoints.aggregate_histogram('new_id'));
+Map.centerObject(aoi, 9);
+Map.addLayer(isStable, {min: 0, max: 1, palette: ['d73027', '1a9850']},
+  'CCDC spectral stability: 2000-2025');
 
-//define the training data
-var roi = ee.FeatureCollection('projects/ee-rg2/assets/Samples/Samples_TL_hierarchy_2025_v1');
-// Filter training points to keep ONLY stable samples
-var stableTrainingPoints = roi.map(function(feature) {
-  var stabilityStatus = isStable.reduceRegion({
-    reducer: ee.Reducer.first(),
-    geometry: feature.geometry(),
-    scale: 30
-  }).get('is_stable');
-  
-  return feature.set('is_stable', stabilityStatus);
-}).filter(ee.Filter.eq('is_stable', 1));
-
-print('Original 2025 Sample Count:', roi.size());
-print('Filtered Stable (2005-2025) Sample Count:', stableTrainingPoints.size());
+// Start this task in the Code Editor Tasks tab after verifying the counts.
+Export.table.toAsset({
+  collection: stableTrainingPoints,
+  description: 'Samples_TL_hierarchy_2025_stable_2000_2025_v1',
+  assetId: 'projects/ee-rg2/assets/Samples/Samples_TL_hierarchy_2025_stable_2000_2025_v1'
+});
