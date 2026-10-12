@@ -1,8 +1,8 @@
 /**
  * Module: Classification & Model Evaluation
  * Description: Implements Hard Classification, One-vs-Rest (OVR) Soft Probability 
- *              Classification, Multi-Probability Classification (for Bayesian Smoothing), 
- *              Feature Importance extraction, and Accuracy Evaluation.
+ *              Classification, Multi-Probability Classification , 
+ *              Feature Importance extraction, and Model Accuracy Evaluation.
  */
 
 /**
@@ -208,45 +208,91 @@ exports.getFeatureImportance = function(trainedModel) {
 
 /**
  * 6. Model Evaluation Metrics
+ *
+ * @param {ee.Classifier} trainedModel - Trained hard classification model.
+ * @param {ee.FeatureCollection} testPixels - Test/validation pixels.
+ * @param {string} classProperty - Property name holding the ground truth class integer.
+ * @param {Object} [classIdToNameMap] - Optional map of integer id -> class name, e.g. {1: 'Forest', 2: 'Water'}.
+ *                                     If provided, adds labeled dictionaries for PA, CA, and F1-score.
+ * @returns {Object} Evaluation metrics including error matrix, overall accuracy, kappa,
+ *                   and per-class producer's accuracy, consumer's accuracy, and F1 score.
  */
-exports.evaluateModel = function(trainedModel, testPixels, classProperty) {
+exports.evaluateModel = function(trainedModel, testPixels, classProperty, classIdToNameMap) {
   var testClassified = testPixels.classify(trainedModel);
   var errorMatrix = testClassified.errorMatrix(classProperty, 'classification');
 
-  return {
+  var result = {
     errorMatrix: errorMatrix,
     overallAccuracy: errorMatrix.accuracy(),
     kappa: errorMatrix.kappa(),
     producersAccuracy: errorMatrix.producersAccuracy(),
     consumersAccuracy: errorMatrix.consumersAccuracy()
   };
+
+  // If classIdToNameMap is provided, construct labeled dictionaries for each class
+  if (classIdToNameMap) {
+    var sortedIds = Object.keys(classIdToNameMap).map(Number).sort(function(a, b) { return a - b; });
+    var classNames = sortedIds.map(function(id) { return classIdToNameMap[id]; });
+    var eeClassNames = ee.List(classNames);
+
+    // Flatten 2D matrices into 1D Lists
+    var paList = ee.List(errorMatrix.producersAccuracy().flatten().toList());
+    var caList = ee.List(errorMatrix.consumersAccuracy().flatten().toList());
+
+    result.producersAccuracyByName = ee.Dictionary.fromLists(eeClassNames, paList);
+    result.consumersAccuracyByName = ee.Dictionary.fromLists(eeClassNames, caList);
+
+    // Compute per-class F1-score: 2 * (PA * CA) / (PA + CA)
+    var f1List = ee.List.sequence(0, eeClassNames.size().subtract(1)).map(function(i) {
+      i = ee.Number(i);
+      var pa = ee.Number(paList.get(i));
+      var ca = ee.Number(caList.get(i));
+      var sum = pa.add(ca);
+      return ee.Algorithms.If(sum.gt(0), pa.multiply(ca).multiply(2).divide(sum), ee.Number(0));
+    });
+    result.f1ScoreByName = ee.Dictionary.fromLists(eeClassNames, f1List);
+  }
+
+  return result;
 };
 
 /**
- * 7. Probability Evaluation — Log Loss (overall and per-class)
+ * 7. Probability Evaluation — Log Loss & Top-Class Accuracy (overall and per-class)
  *
- * Computes log loss using the predicted probabilities from a MULTIPROBABILITY
- * classifier against ground-truth labels in testPixels.
+ * Computes log loss and top-class accuracy using predicted probabilities from a
+ * MULTIPROBABILITY classifier against ground-truth labels in testPixels.
  *
  * Log loss per sample = -log(p_true_class + eps)
  * Overall log loss    = mean over all test samples
  * Per-class log loss  = mean over samples belonging to that class
  *
- * @param {ee.FeatureCollection} testPixels  - Labeled test features (same schema as training).
- * @param {ee.Classifier}        trainedModel - Model trained with setOutputMode('MULTIPROBABILITY').
+ * @param {ee.FeatureCollection|ee.Classifier} arg1 - testPixels or trainedModel (flexible argument order).
+ * @param {ee.Classifier|ee.FeatureCollection} arg2 - trainedModel or testPixels.
  * @param {string}               classProperty - Property name holding the integer class label.
- * @param {Object}               classIdToNameMap - Mapping of integer class id → band name string,
- *                               e.g. {1: 'Water', 2: 'Forest'}. Must match the order used during training.
+ * @param {Object}               classIdToNameMap - Mapping of integer class id -> band name string,
+ *                               e.g. {1: 'Water', 2: 'Forest'}.
  * @param {number}               [eps=1e-7] - Small epsilon added to probabilities before log to
  *                               avoid log(0). Defaults to 1e-7.
  * @returns {ee.Dictionary} Dictionary with keys:
- *   - 'overallLogLoss'   {ee.Number}     — mean log loss across all samples
- *   - 'perClassLogLoss'  {ee.Dictionary} — per-class name → mean log loss for that class
- *   - 'nSamples'         {ee.Number}     — total number of test samples evaluated
- *   - 'perClassNSamples' {ee.Dictionary} — per-class name → sample count
+ *   - 'overallLogLoss'      {ee.Number}     — mean log loss across all samples
+ *   - 'overallAccuracy'     {ee.Number}     — overall argmax top-class accuracy
+ *   - 'perClassLogLoss'     {ee.Dictionary} — per-class name -> mean log loss for that class
+ *   - 'perClassAccuracy'    {ee.Dictionary} — per-class name -> top-class accuracy (recall)
+ *   - 'nSamples'            {ee.Number}     — total number of test samples evaluated
+ *   - 'perClassNSamples'    {ee.Dictionary} — per-class name -> sample count
  */
-exports.evaluateProbabilities = function(testPixels, trainedModel, classProperty, classIdToNameMap, eps) {
+exports.evaluateProbabilities = function(arg1, arg2, classProperty, classIdToNameMap, eps) {
   eps = (eps !== undefined && eps !== null) ? eps : 1e-7;
+
+  // Flexible argument handling: supports (testPixels, trainedModel, ...) or (trainedModel, testPixels, ...)
+  var testPixels, trainedModel;
+  if (arg1 instanceof ee.Classifier) {
+    trainedModel = arg1;
+    testPixels   = arg2;
+  } else {
+    testPixels   = arg1;
+    trainedModel = arg2;
+  }
 
   // Parse sorted class ids and matching band names (must mirror multiProbabilityClassification)
   var sortedIds   = Object.keys(classIdToNameMap).map(Number).sort(function(a, b) { return a - b; });
@@ -254,47 +300,56 @@ exports.evaluateProbabilities = function(testPixels, trainedModel, classProperty
   var eeClassIds  = ee.List(sortedIds);
   var eeBandNames = ee.List(classBands);
 
-  // Classify test pixels — returns an array-valued property 'classification'
-  var classified = testPixels.classify(trainedModel);
+  // Classify test pixels into a probability list property named 'probs'
+  var scored = testPixels.classify(trainedModel, 'probs');
 
-  // Attach each class probability as a named feature property via server-side iterate.
-  // (A direct .map() cannot dynamically set property names from an ee.List, so we fold
-  //  over class indices instead.)
-  // Server-side approach: iterate over class indices to attach each prob as a feature property
-  classified = ee.FeatureCollection(
-    ee.List.sequence(0, eeBandNames.size().subtract(1)).iterate(function(idx, fc) {
-      idx = ee.Number(idx);
-      var bandName = ee.String(eeBandNames.get(idx));
-      return ee.FeatureCollection(fc).map(function(ft) {
-        var prob = ee.Array(ft.get('classification')).get([idx]);
-        return ft.set(bandName, prob);
-      });
-    }, classified)
-  );
+  // Compute per-sample metrics using server-side ee.List and ee.Array operations
+  var withMetrics = scored.map(function(ft) {
+    var probs       = ee.List(ft.get('probs'));
+    var trueClassId = ee.Number(ft.get(classProperty));
+    var trueIdx     = eeClassIds.indexOf(trueClassId);
 
-  // Compute per-sample log loss: -log(p_true + eps)
-  classified = classified.map(function(ft) {
-    var trueClassId  = ee.Number(ft.get(classProperty));
-    // Find index of true class id in sorted list
-    var trueIdx      = eeClassIds.indexOf(trueClassId);
-    var trueProb     = ee.Number(ee.Array(ft.get('classification')).get([trueIdx]));
-    var sampleLoss   = trueProb.add(eps).log().multiply(-1);
-    return ft.set('_log_loss', sampleLoss);
+    // Probability of the true ground-truth class
+    var pTrue       = ee.Number(probs.get(trueIdx)).max(eps);
+    var sampleLoss  = pTrue.log().multiply(-1);
+
+    // Argmax predicted index (top-class)
+    var predIdx     = ee.Number(ee.List(ee.Array(probs).argmax()).get(0));
+    var isCorrect   = predIdx.eq(trueIdx);
+
+    return ft.set({
+      '_log_loss': sampleLoss,
+      '_correct':  isCorrect
+    });
   });
 
-  // Overall log loss — mean across all samples
-  var overallLogLoss = classified.aggregate_mean('_log_loss');
-  var nSamples       = classified.size();
+  // Overall metrics across all samples
+  var overallLogLoss  = withMetrics.aggregate_mean('_log_loss');
+  var overallAccuracy = withMetrics.aggregate_mean('_correct');
+  var nSamples        = withMetrics.size();
 
-  // Per-class log loss — mean within each class subset
-  var perClassLogLoss    = ee.Dictionary.fromLists(
+  // Per-class metrics within each ground truth class subset
+  var perClassLogLoss = ee.Dictionary.fromLists(
     eeBandNames,
     eeClassIds.map(function(classId) {
-      classId        = ee.Number(classId);
-      var classSubset = classified.filter(ee.Filter.eq(classProperty, classId));
+      classId = ee.Number(classId);
+      var classSubset = withMetrics.filter(ee.Filter.eq(classProperty, classId));
       return ee.Algorithms.If(
         classSubset.size().gt(0),
         classSubset.aggregate_mean('_log_loss'),
+        ee.Number(null)
+      );
+    })
+  );
+
+  var perClassAccuracy = ee.Dictionary.fromLists(
+    eeBandNames,
+    eeClassIds.map(function(classId) {
+      classId = ee.Number(classId);
+      var classSubset = withMetrics.filter(ee.Filter.eq(classProperty, classId));
+      return ee.Algorithms.If(
+        classSubset.size().gt(0),
+        classSubset.aggregate_mean('_correct'),
         ee.Number(null)
       );
     })
@@ -304,14 +359,16 @@ exports.evaluateProbabilities = function(testPixels, trainedModel, classProperty
     eeBandNames,
     eeClassIds.map(function(classId) {
       classId = ee.Number(classId);
-      return classified.filter(ee.Filter.eq(classProperty, classId)).size();
+      return withMetrics.filter(ee.Filter.eq(classProperty, classId)).size();
     })
   );
 
   return ee.Dictionary({
-    overallLogLoss:   overallLogLoss,
-    perClassLogLoss:  perClassLogLoss,
-    nSamples:         nSamples,
-    perClassNSamples: perClassNSamples
+    overallLogLoss:    overallLogLoss,
+    overallAccuracy:   overallAccuracy,
+    perClassLogLoss:   perClassLogLoss,
+    perClassAccuracy:  perClassAccuracy,
+    nSamples:          nSamples,
+    perClassNSamples:  perClassNSamples
   });
 };
