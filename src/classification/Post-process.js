@@ -107,3 +107,101 @@ exports.classifyFromProbs = function(probsImage, classBands, classValues) {
 
   return maxIdx.toByte();
 };
+
+/**
+ * =========================================================================
+ * GEOBIA: Geographic Object-Based Image Analysis (SNIC Superpixel Functions)
+ * =========================================================================
+ */
+
+/**
+ * Delineates spatial superpixel objects using SNIC (Simple Non-Iterative Clustering).
+ * 
+ * @param {ee.Image} featureImage - Multi-band image driving cluster boundaries (e.g., optical bands, NDVI)
+ * @param {Object} [options] - SNIC parameters:
+ *    - size: seed spacing in pixels (default: 10, ~1 ha at 10m resolution)
+ *    - compactness: compactness factor (default: 0.5; lower = adheres more to spectral boundaries)
+ *    - connectivity: pixel connectivity (4 or 8, default: 8)
+ *    - neighborhoodSize: search neighborhood (default: 2 * size)
+ *    - seeds: optional pre-defined seed grid image
+ * @returns {ee.Image} SNIC result image containing the 'clusters' band and band cluster means
+ */
+exports.snicSuperpixels = function(featureImage, options) {
+  options = options || {};
+  var size = options.size || 10;
+  var compactness = (options.compactness !== undefined) ? options.compactness : 0.5;
+  var connectivity = options.connectivity || 8;
+  var neighborhoodSize = options.neighborhoodSize || (size * 2);
+  var seeds = options.seeds || null;
+
+  var snic = ee.Algorithms.Image.Segmentation.SNIC({
+    image: featureImage,
+    size: size,
+    compactness: compactness,
+    connectivity: connectivity,
+    neighborhoodSize: neighborhoodSize,
+    seeds: seeds
+  });
+
+  return snic;
+};
+
+/**
+ * Aggregates continuous class probabilities across SNIC superpixel objects by computing
+ * the mean probability per object and re-normalizing.
+ * 
+ * @param {ee.Image} probsImage - Image containing class probability bands
+ * @param {ee.Image} clusters - Single band integer image representing cluster IDs ('clusters')
+ * @param {number} [maxSize=1024] - Maximum connected component size in pixels for reduceConnectedComponents
+ * @returns {ee.Image} Object-mean probabilities stack
+ */
+exports.aggregateProbsByClusters = function(probsImage, clusters, maxSize) {
+  maxSize = maxSize || 1024;
+  var labelBand = clusters.select(['clusters']).toInt32();
+
+  var clusterImage = probsImage.addBands(labelBand);
+  var objectProbs = clusterImage.reduceConnectedComponents({
+    reducer: ee.Reducer.mean(),
+    labelBand: 'clusters',
+    maxSize: maxSize
+  });
+
+  // Fallback to original pixel probabilities if cluster exceeds maxSize
+  objectProbs = objectProbs.unmask(probsImage);
+
+  // Normalize so probabilities sum to 1.0 across bands
+  var sumProbs = objectProbs.reduce(ee.Reducer.sum());
+  objectProbs = objectProbs.divide(sumProbs.where(sumProbs.eq(0), 1.0));
+
+  return objectProbs;
+};
+
+/**
+ * High-level GEOBIA post-processing pipeline:
+ * 1. Clusters landscape into superpixels using SNIC on optical/spectral features.
+ * 2. Averages class probabilities within each spatial object.
+ * 3. Classifies objects via argmax into discrete LULC classes.
+ * 
+ * @param {ee.Image} probsImage - Class probabilities (optionally Bayesian-smoothed)
+ * @param {ee.Image} featureImage - Optical bands / indices driving spatial segmentation
+ * @param {Array|ee.List} classBands - Names of the class probability bands
+ * @param {Array|ee.List} [classValues] - Target integer class IDs for remapping
+ * @param {Object} [options] - Configuration for SNIC and connected components:
+ *    - size: seed spacing (default: 10)
+ *    - compactness: shape compactness factor (default: 0.5)
+ *    - maxSize: max cluster size (default: 1024)
+ * @returns {Object} { probs: ee.Image, classification: ee.Image, clusters: ee.Image }
+ */
+exports.applySnicOBIA = function(probsImage, featureImage, classBands, classValues, options) {
+  options = options || {};
+  var snic = exports.snicSuperpixels(featureImage, options);
+  var clusters = snic.select('clusters');
+  var objectProbs = exports.aggregateProbsByClusters(probsImage, clusters, options.maxSize);
+  var objectClass = exports.classifyFromProbs(objectProbs, classBands, classValues);
+
+  return {
+    probs: objectProbs,
+    classification: objectClass,
+    clusters: clusters
+  };
+};
