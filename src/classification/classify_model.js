@@ -305,7 +305,8 @@ exports.evaluateProbabilities = function(arg1, arg2, classProperty, classIdToNam
 
   // Compute per-sample metrics using server-side ee.List and ee.Array operations
   var withMetrics = scored.map(function(ft) {
-    var probs       = ee.List(ft.get('probs'));
+    var probsArr    = ee.Array(ft.get('probs'));
+    var probs       = probsArr.toList();
     var trueClassId = ee.Number(ft.get(classProperty));
     var trueIdx     = eeClassIds.indexOf(trueClassId);
 
@@ -313,13 +314,13 @@ exports.evaluateProbabilities = function(arg1, arg2, classProperty, classIdToNam
     var pTrue       = ee.Number(probs.get(trueIdx)).max(eps);
     var sampleLoss  = pTrue.log().multiply(-1);
 
-    // Argmax predicted index (top-class)
-    var predIdx     = ee.Number(ee.List(ee.Array(probs).argmax()).get(0));
+    // Argmax predicted index (top-class); argmax() returns a list of coordinates
+    var predIdx     = ee.Number(probsArr.argmax().get(0));
     var isCorrect   = predIdx.eq(trueIdx);
 
     return ft.set({
       '_log_loss': sampleLoss,
-      '_correct':  isCorrect
+      '_correct':  ee.Number(isCorrect)
     });
   });
 
@@ -337,7 +338,7 @@ exports.evaluateProbabilities = function(arg1, arg2, classProperty, classIdToNam
       return ee.Algorithms.If(
         classSubset.size().gt(0),
         classSubset.aggregate_mean('_log_loss'),
-        ee.Number(null)
+        null
       );
     })
   );
@@ -350,7 +351,7 @@ exports.evaluateProbabilities = function(arg1, arg2, classProperty, classIdToNam
       return ee.Algorithms.If(
         classSubset.size().gt(0),
         classSubset.aggregate_mean('_correct'),
-        ee.Number(null)
+        null
       );
     })
   );
