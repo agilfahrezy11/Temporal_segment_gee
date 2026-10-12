@@ -1,27 +1,36 @@
 /**
- * Landsat Continuous Change Detection and Classification Pipeline
- *
+ * Landsat Continuous Change Detection and Classification (CCDC) Pipeline
+ * This code is used to analysis change and return synthetic image
  * Coefficient units differ by source:
  *   - own run (this module's getLandsatTimeSeries feeds CCDC in 0..10,000)  -> coefScale = 10000
  *   - GOOGLE/GLOBAL_CCDC/V1 (coefficients are already 0..1 reflectance)     -> coefScale = 1
  */
 
-// 1. Prepare Landsat 8 & 9 Collection for CCDC (0-10000 range)
+// 1. Prepare Landsat 5, 7, 8 & 9 Collection for CCDC (0-10000 range).
+// The sensor-specific source bands are renamed to one common schema before
+// merging, so CCDC sees a single, consistent spectral time series.
 exports.getLandsatTimeSeries = function(roi, startDate, endDate) {
   startDate = startDate || '2020-01-01';
   endDate = endDate || '2025-12-31';
 
-  var maskAndScale = function(img) {
+  var maskAndScale = function(img, sourceBands) {
     var qa = img.select('QA_PIXEL');
-    // Mask clouds (bit 3) and cloud shadows (bit 4)
+    // Mask fill (important for Landsat 7 SLC-off gaps), dilated clouds,
+    // clouds, cloud shadows, and snow.  These QA_PIXEL bits are shared by
+    // Landsat Collection 2 Level-2 products used below.
+    var fillBitMask = 1;
+    var dilatedCloudBitMask = 1 << 1;
     var cloudShadowBitMask = 1 << 4;
     var cloudsBitMask = 1 << 3;
-    var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
-                 .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+    var snowBitMask = 1 << 5;
+    var mask = qa.bitwiseAnd(fillBitMask).eq(0)
+      .and(qa.bitwiseAnd(dilatedCloudBitMask).eq(0))
+      .and(qa.bitwiseAnd(cloudShadowBitMask).eq(0))
+      .and(qa.bitwiseAnd(cloudsBitMask).eq(0))
+      .and(qa.bitwiseAnd(snowBitMask).eq(0));
 
     // Convert USGS Collection 2 SR (0.0000275 * DN - 0.2) to 0..10,000 scale
-    var srBands = img.select(
-      ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7'],
+    var srBands = img.select(sourceBands,
       ['BLUE',  'GREEN', 'RED',   'NIR',   'SWIR1', 'SWIR2']
     ).multiply(0.0000275).subtract(0.2).multiply(10000);
 
@@ -29,20 +38,52 @@ exports.getLandsatTimeSeries = function(roi, startDate, endDate) {
       .copyProperties(img, ['system:time_start']);
   };
 
+  // Landsat 5/7 ETM+/TM and Landsat 8/9 OLI use different band numbers
+  var tmEtmBands = ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7'];
+  var oliBands = ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7'];
+
+  var l5 = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+    .filterBounds(roi)
+    .filterDate(startDate, endDate)
+    .map(function(img) { return maskAndScale(img, tmEtmBands); });
+
+  var l7 = ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')
+    .filterBounds(roi)
+    .filterDate(startDate, endDate)
+    .map(function(img) { return maskAndScale(img, tmEtmBands); });
+
   var l8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
     .filterBounds(roi)
     .filterDate(startDate, endDate)
-    .map(maskAndScale);
+    .map(function(img) { return maskAndScale(img, oliBands); });
 
   var l9 = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')
     .filterBounds(roi)
     .filterDate(startDate, endDate)
-    .map(maskAndScale);
+    .map(function(img) { return maskAndScale(img, oliBands); });
 
-  return l8.merge(l9);
+  return l5.merge(l7).merge(l8).merge(l9);
 };
 
-// 2. Execute CCDC using Google Global CCDC hyperparameters
+// 2. Monthly median composites from a masked Landsat collection.
+// Months with no source observations are dropped. The timestamp is set to the
+// middle of the month so CCDC receives one temporally representative image.
+exports.toMonthlyMedian = function(col, startDate, endDate) {
+  var start = ee.Date(startDate);
+  var nMonths = ee.Date(endDate).difference(start, 'month').floor();
+  var composites = ee.List.sequence(0, nMonths.subtract(1)).map(function(month) {
+    var monthStart = start.advance(month, 'month');
+    var monthlyImages = col.filterDate(monthStart, monthStart.advance(1, 'month'));
+    return monthlyImages.median()
+      .set('system:time_start', monthStart.advance(15, 'day').millis())
+      .set('n', monthlyImages.size());
+  });
+
+  return ee.ImageCollection.fromImages(composites)
+    .filter(ee.Filter.gt('n', 0));
+};
+
+// 3. Execute CCDC using Google Global CCDC hyperparameters
 exports.runLandsatCCDC = function(lsCollection) {
   return ee.Algorithms.TemporalSegmentation.Ccdc({
     collection: lsCollection,
@@ -57,7 +98,7 @@ exports.runLandsatCCDC = function(lsCollection) {
   });
 };
 
-// 3. Nearest segment in time, per pixel (index + distance in years)
+// 4. Nearest segment in time, per pixel (index + distance in years)
 exports.nearestSegment = function(ccdc, t) {
   t = ee.Number(t);
   var tS = ccdc.select('tStart'), tE = ccdc.select('tEnd');
@@ -69,7 +110,7 @@ exports.nearestSegment = function(ccdc, t) {
   };
 };
 
-// 4. Fill isolated holes from a 3x3 median, only where enough neighbours are valid
+// 5. Fill isolated holes from a 3x3 median, only where enough neighbours are valid
 exports.fillIsolated = function(img, minNeighbors) {              // e.g. 5 of 8
   var n = img.select(0).mask().reduceNeighborhood({
     reducer: ee.Reducer.sum(), kernel: ee.Kernel.square(1)});
@@ -77,7 +118,7 @@ exports.fillIsolated = function(img, minNeighbors) {              // e.g. 5 of 8
   return img.unmask(med.updateMask(n.gte(minNeighbors)));
 };
 
-// 5. Synthetic reflectance stack at fractional-year t.
+// 6. Synthetic reflectance stack at fractional-year t.
 //    tolYears : max distance (years) to the nearest segment
 //    coefScale: 10000 for the own run, 1 for GOOGLE/GLOBAL_CCDC/V1
 exports.getSyntheticLandsatStack = function(ccdc, t, addIndices, tolYears, coefScale) {
@@ -123,7 +164,7 @@ exports.getSyntheticLandsatStack = function(ccdc, t, addIndices, tolYears, coefS
   return stack.addBands(seg.gap);
 };
 
-// 6. First-harmonic amplitude and phase of the nearest segment
+// 7. First-harmonic amplitude and phase of the nearest segment
 exports.getHarmonics = function(ccdc, t, bands, tolYears, coefScale) {
   tolYears = tolYears !== undefined ? tolYears : 1;
   coefScale = coefScale !== undefined ? coefScale : 10000;
