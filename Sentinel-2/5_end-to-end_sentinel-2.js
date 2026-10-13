@@ -147,8 +147,9 @@ function computeIndicesFromSynth(synthImg, suffix) {
     'g':  2.5,
     'L':  1.0
   };
-  var computed = spectral.computeIndex(imgForIndices, baseIndexList, param);
-  var renamed = computed.bandNames().map(function(b) {
+  var computed = spectral.computeIndex(imgForIndices, baseIndexList, param)
+    .select(baseIndexList);
+  var renamed = baseIndexList.map(function(b) {
     return ee.String(b).cat('_').cat(suffix);
   });
   return computed.rename(renamed);
@@ -236,22 +237,28 @@ function getSeasonalS1(year, roi) {
   return ee.Image.cat([vh_dry, vh_wet, vv_dry, vv_wet]);
 } 
 
-// Annual PALSAR/PALSAR-2 mosaic (stored DN converted to gamma nought in dB)
-var palsarCollection2023 = ee.ImageCollection('JAXA/ALOS/PALSAR/YEARLY/SAR_EPOCH')
+// Annual 2025 PALSAR-2 ScanSAR (stored DN converted to gamma nought in dB)
+// Filter dual-polarization acquisitions before selecting HH/HV; the collection
+// also contains single-polarization scenes.
+var scansarCollection2025 = ee.ImageCollection('JAXA/ALOS/PALSAR-2/Level2_2/ScanSAR')
   .filterBounds(aoi)
-  .filterDate('2023-01-01', '2023-12-30');
-var palsarDn2023 = ee.Image(palsarCollection2023.first()).select(['HH', 'HV']);
-var palsarFeatures2023 = palsarDn2023
-  .updateMask(palsarDn2023.gt(0))
+  .filterDate('2025-01-01', '2026-01-01')
+  .filter(ee.Filter.listContains('Polarizations', 'HH'))
+  .filter(ee.Filter.listContains('Polarizations', 'HV'));
+var scansarDn2025 = scansarCollection2025
+  .select(['HH', 'HV'])
+  .median();
+var scansarFeatures2025 = scansarDn2025
+  .updateMask(scansarDn2025.gt(0))
   .pow(2)
   .log10()
   .multiply(10)
   .subtract(83)
-  .rename(['PALSAR_HH_dB', 'PALSAR_HV_dB'])
+  .rename(['ScanSAR_HH_dB', 'ScanSAR_HV_dB'])
   .clip(aoi);
 
-print('PALSAR 2023 image count:', palsarCollection2023.size());
-print('PALSAR predictor bands:', palsarFeatures2023.bandNames());
+print('2025 dual-polarization ScanSAR image count:', scansarCollection2025.size());
+print('ScanSAR predictor bands:', scansarFeatures2025.bandNames());
 
 // Sentinel-1 seasonal radar backscatter features
 var s1_seasonal_2020 = getSeasonalS1(2020, aoi).clip(aoi);
@@ -282,7 +289,7 @@ var topo = elev.int16().addBands(terrain_product).addBands(landform).addBands(tw
 var final_stack_2025 = ee.Image.cat([
   spectral_features_2025,
   s1_seasonal_2025,
-  palsarFeatures2023,
+  scansarFeatures2025,
   topo
 ]).clip(aoi);
 //define the training data
