@@ -1,13 +1,14 @@
 /**
  * Module: Sentinel-2 CCDC Temporal Segmentation & Synthetic Stack Generator
- * Description: Prepares Sentinel-2 Surface Reflectance time series using Cloud Score+, 
- *              executes CCDC temporal segmentation, and evaluates harmonic coefficients 
- *              to generate synthetic predictor stacks for classification.
+ * Description: Prepares Sentinel-2 Surface Reflectance time series using Cloud Score+,
+ *              executes CCDC temporal segmentation, and provides synthetic predictor
+ *              stacks and harmonic metrics for classification.
  */
 
 /**
  * 1. Cloud Masking & Scaling Helper (Cloud Score+)
- * Applies Cloud Score+ (cs_cdf or cs) quality threshold and scales SR bands by 10,000.
+ * Applies Cloud Score+ (cs_cdf or cs) quality threshold and converts SR values
+ * from stored integers to 0..1 reflectance by dividing by 10,000.
  *
  * @param {ee.Image} image - Sentinel-2 image with linked Cloud Score+ band.
  * @param {number} [clearThreshold=0.60] - Minimum quality score to keep (0.50 - 0.65).
@@ -29,16 +30,16 @@ exports.maskAndScaleS2 = function(image, clearThreshold, qaBand) {
 
 /**
  * 2. Prepare S2 Time Series Collection for CCDC (using Cloud Score+)
- * Links Sentinel-2 L2A with Cloud Score+, masks clouds/shadows, renames bands,
- * and attaches fractional year timestamps ('t').
+ * Links Sentinel-2 L2A with Cloud Score+, masks low-quality pixels, and renames
+ * bands. Source timestamps are preserved for CCDC's fractional-year date format.
  *
  * @param {ee.Geometry} roi - Region of interest boundary.
- * @param {string} [startDate='2015-06-01'] - Start date for time series.
+ * @param {string} [startDate='2018-12-01'] - Start date for time series.
  * @param {string} [endDate='2025-12-31'] - End date for time series.
  * @param {number} [clearThreshold=0.60] - Cloud Score+ quality threshold.
  * @param {string} [qaBand='cs_cdf'] - Quality band to evaluate.
- * @param {Array<string>} [customBands] - Custom band names output.
- * @returns {ee.ImageCollection} Processed collection ready for CCDC.
+ * @returns {ee.ImageCollection} Processed collection ready for CCDC, with bands
+ *          renamed to lowercase and source reflectance values retained.
  */
 exports.getS2TimeSeries = function(roi, startDate, endDate, clearThreshold, qaBand) {
   startDate = startDate || '2018-12-01'; //example date
@@ -101,11 +102,14 @@ exports.runCCDC = function(s2Collection, options) {
  * @param {number|ee.Number} targetDateFractional - Date in fractional year (e.g., 2025.5 for July 1, 2025).
  * @param {Array<string>} [bands] - Spectral band names matching CCDC outputs.
  * @param {boolean} [addIndices=true] - Whether to compute spectral indices (NDVI, NDWI, NDBI).
+ * @param {number} [coefficientScale=10000] - Scale of the CCDC coefficients. Use 10000
+ *        for collections produced by getS2TimeSeries and 1 for reflectance-scaled input.
  * @returns {ee.Image} Synthetic surface reflectance stack with indices.
  */
-exports.getSyntheticStack = function(ccdcOutput, targetDateFractional, bands, addIndices) {
+exports.getSyntheticStack = function(ccdcOutput, targetDateFractional, bands, addIndices, coefficientScale) {
   bands = bands || ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'];
   addIndices = addIndices !== undefined ? addIndices : true;
+  coefficientScale = coefficientScale !== undefined ? coefficientScale : 10000;
 
   var t = ee.Number(targetDateFractional);
   var tStart = ccdcOutput.select('tStart');
@@ -144,8 +148,8 @@ exports.getSyntheticStack = function(ccdcOutput, targetDateFractional, bands, ad
     // Matrix multiplication: [1 x 8] * [8 x 1] = [1 x 1]
     var fitArray = segCoefs.matrixMultiply(termsArray);
     
-    // Project and flatten array to scalar image, then scale down 10,000 -> 0..1
-    return fitArray.arrayProject([0]).arrayFlatten([[band]]).divide(10000);
+    // Project and flatten array to scalar image, then convert to reflectance units.
+    return fitArray.arrayProject([0]).arrayFlatten([[band]]).divide(coefficientScale);
   });
 
   var stack = ee.Image(syntheticBands);
@@ -160,8 +164,49 @@ exports.getSyntheticStack = function(ccdcOutput, targetDateFractional, bands, ad
   return stack;
 
 };
+
 /**
- * 5. Multi-Year Synthetic Stack Generator
+ * 5. First-harmonic amplitude and phase for the segment active at a target date.
+ * Coefficients follow the same band schema and scale as getSyntheticStack.
+ *
+ * @param {ee.Image} ccdcOutput - Output image from runCCDC.
+ * @param {number|ee.Number} targetDateFractional - Date in fractional years.
+ * @param {Array<string>} bands - CCDC band names, e.g. ['nir', 'red', 'swir1'].
+ * @param {number} [coefficientScale=10000] - CCDC coefficient scale.
+ * @returns {ee.Image} Amplitude and phase bands for each requested input band.
+ */
+exports.getHarmonics = function(ccdcOutput, targetDateFractional, bands, coefficientScale) {
+  coefficientScale = coefficientScale !== undefined ? coefficientScale : 10000;
+  var t = ee.Number(targetDateFractional);
+  var segmentMask = ccdcOutput.select('tStart').lte(t)
+    .and(ccdcOutput.select('tEnd').gte(t))
+    .toArray(0)
+    .toArray(1);
+
+  var harmonicImages = bands.map(function(band) {
+    var coefficients = ccdcOutput.select(band + '_coefs')
+      .arrayMask(segmentMask)
+      .arraySlice(0, 0, 1);
+    var a1 = coefficients.arraySlice(1, 2, 3)
+      .arrayProject([0])
+      .arrayFlatten([['a1']])
+      .divide(coefficientScale);
+    var b1 = coefficients.arraySlice(1, 3, 4)
+      .arrayProject([0])
+      .arrayFlatten([['b1']])
+      .divide(coefficientScale);
+
+    return ee.Image.cat([
+      a1.hypot(b1).rename(band + '_amp'),
+      b1.atan2(a1).rename(band + '_phase')
+    ]);
+  });
+
+  return ee.Image.cat(harmonicImages);
+};
+
+/**
+ * 6. Multi-Year Synthetic Stack Generator
  * Generates a dictionary of synthetic stacks for multiple target years.
  *
  * @param {ee.Image} ccdcOutput - Output image from runCCDC.
@@ -169,15 +214,18 @@ exports.getSyntheticStack = function(ccdcOutput, targetDateFractional, bands, ad
  * @param {number} [fractionOfYear=0.5] - Day of year fraction (e.g., 0.5 = ~July 1 dry season).
  * @param {Array<string>} [bands] - Spectral band list.
  * @param {boolean} [addIndices=true] - Whether to compute indices.
+ * @param {number} [coefficientScale=10000] - CCDC coefficient scale.
  * @returns {Object} Map with year keys pointing to ee.Image synthetic stacks.
  */
-exports.getMultiYearSyntheticStacks = function(ccdcOutput, yearsList, fractionOfYear, bands, addIndices) {
+exports.getMultiYearSyntheticStacks = function(ccdcOutput, yearsList, fractionOfYear, bands, addIndices, coefficientScale) {
   fractionOfYear = fractionOfYear !== undefined ? fractionOfYear : 0.5;
   
   var stacks = {};
   yearsList.forEach(function(year) {
     var targetT = ee.Number(year).add(fractionOfYear);
-    stacks[year] = exports.getSyntheticStack(ccdcOutput, targetT, bands, addIndices);
+    stacks[year] = exports.getSyntheticStack(
+      ccdcOutput, targetT, bands, addIndices, coefficientScale
+    );
   });
 
   return stacks;
