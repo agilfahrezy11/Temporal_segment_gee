@@ -42,13 +42,13 @@ var T = {
   harm: 0.50    // Mid-year evaluation for nearest segment harmonics
 };
 
-// Base indices to calculate from spectral library
-var baseIndexList = ['BLFEI', 'DBSI', 'GBNDVI', 'MBI', 'MNDWI', 'MSAVI', 'NDMI', 'NDVI', 'MCARI'];
+// Spectral indices to compute
+var baseIndexList = ['BLFEI', 'DBSI', 'GBNDVI', 'MBI', 'MNDWI', 'MSAVI', 'NDMI', 'NDVI'];
 // Indices requiring delta computation (wet - dry)
 var deltaIndexList = ['BLFEI', 'DBSI', 'MBI', 'MNDWI', 'MSAVI', 'NDMI'];
 
 // Target years to process
-var targetYears = [2025, 2015, 2005];
+var targetYears = [2025, 2020];
 
 // Class schema (18 classes)
 var classIdToName = {
@@ -154,35 +154,6 @@ function computeIndicesFromSynth(synthImg, suffix) {
   return computed.rename(renamed);
 }
 
-function computeHarmonicsFromActiveSegment(ccdc, t, bands) {
-  var time = ee.Number(t);
-  var segmentMask = ccdc.select('tStart').lte(time)
-    .and(ccdc.select('tEnd').gte(time))
-    .toArray(0)
-    .toArray(1);
-
-  var harmonics = bands.map(function(band) {
-    var coefficients = ccdc.select(band + '_coefs')
-      .arrayMask(segmentMask)
-      .arraySlice(0, 0, 1);
-    var a1 = coefficients.arraySlice(1, 2, 3)
-      .arrayProject([0])
-      .arrayFlatten([['a1']])
-      .divide(10000);
-    var b1 = coefficients.arraySlice(1, 3, 4)
-      .arrayProject([0])
-      .arrayFlatten([['b1']])
-      .divide(10000);
-
-    return ee.Image.cat([
-      a1.hypot(b1).rename(band + '_amp'),
-      b1.atan2(a1).rename(band + '_phase')
-    ]);
-  });
-
-  return ee.Image.cat(harmonics);
-}
-
 //function to build the feature stack for a given year using CCDC synthetic imagery
 //use spectral index
 function buildYearFeatures(ccdc, year) {
@@ -224,7 +195,7 @@ function buildYearFeatures(ccdc, year) {
   var deltaIndices = ee.Image.cat(deltaImages);
 
   // 6. CCDC Harmonics (NIR, RED, SWIR1)
-  var harmImgs = computeHarmonicsFromActiveSegment(
+  var harmImgs = ccdc_module.getHarmonics(
     ccdc, year + T.harm, ['nir', 'red', 'swir1']
   );
 
@@ -264,7 +235,25 @@ function getSeasonalS1(year, roi) {
   var vh_dry = dry.select('VH').rename('VH_dry');
   return ee.Image.cat([vh_dry, vh_wet, vv_dry, vv_wet]);
 } 
-//implement the code for radar backscatter features
+
+// Annual PALSAR/PALSAR-2 mosaic (stored DN converted to gamma nought in dB)
+var palsarCollection2023 = ee.ImageCollection('JAXA/ALOS/PALSAR/YEARLY/SAR_EPOCH')
+  .filterBounds(aoi)
+  .filterDate('2023-01-01', '2023-12-30');
+var palsarDn2023 = ee.Image(palsarCollection2023.first()).select(['HH', 'HV']);
+var palsarFeatures2023 = palsarDn2023
+  .updateMask(palsarDn2023.gt(0))
+  .pow(2)
+  .log10()
+  .multiply(10)
+  .subtract(83)
+  .rename(['PALSAR_HH_dB', 'PALSAR_HV_dB'])
+  .clip(aoi);
+
+print('PALSAR 2023 image count:', palsarCollection2023.size());
+print('PALSAR predictor bands:', palsarFeatures2023.bandNames());
+
+// Sentinel-1 seasonal radar backscatter features
 var s1_seasonal_2020 = getSeasonalS1(2020, aoi).clip(aoi);
 var s1_seasonal_2025 = getSeasonalS1(2025, aoi).clip(aoi);
 // Build feature stacks for each epoch from the unified Landsat CCDC mosaic
@@ -290,7 +279,12 @@ var twi = ee.Image('projects/ee-rg2/assets/Top_Wetness_index')
 var topo = elev.int16().addBands(terrain_product).addBands(landform).addBands(twi)//(2. Topographical Data Features)
 
 //Stack all features for each year
-var final_stack_2025 = ee.Image.cat([spectral_features_2025, s1_seasonal_2025, topo]).clip(aoi);
+var final_stack_2025 = ee.Image.cat([
+  spectral_features_2025,
+  s1_seasonal_2025,
+  palsarFeatures2023,
+  topo
+]).clip(aoi);
 //define the training data
 var roi = ee.FeatureCollection('projects/ee-rg2/assets/Samples/New_Samples_TL_2025');
 
