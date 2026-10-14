@@ -5,14 +5,14 @@
  * 
  * Description:
  * End-to-end integrated script combining:
- *  1. On-the-fly CCDC feature engineering for 2025, 2015, and 2005
- *     (using RFECV optimal features: seasonal bands, indices, deltas, harmonics)
+ *  1. Candidate feature engineering for 2025 and 2020
+ *     (seasonal bands, indices, deltas, texture, SAR, and topography)
  *  2. EECU-optimized extraction (single synthetic reconstruction per season)
  *  3. Stratified sampling on 2025 ground truth samples
  *  4. Optional Random Forest hyperparameter tuning
  *  5. Multi-probability Random Forest model training & accuracy/log-loss evaluation
- *  6. Multi-year inference (2025, 2015, 2005) & Bayesian spatial smoothing
- *  7. Exporting multi-band probability assets for each target year
+ *  6. Multi-year inference (2025, 2020) & Bayesian spatial smoothing
+ *  7. Exporting multi-band probability assets for both target years
  * =========================================================================
  */
 
@@ -237,28 +237,32 @@ function getSeasonalS1(year, roi) {
   return ee.Image.cat([vh_dry, vh_wet, vv_dry, vv_wet]);
 } 
 
-// Annual 2025 PALSAR-2 ScanSAR (stored DN converted to gamma nought in dB)
-// Filter dual-polarization acquisitions before selecting HH/HV; the collection
-// also contains single-polarization scenes.
-var scansarCollection2025 = ee.ImageCollection('JAXA/ALOS/PALSAR-2/Level2_2/ScanSAR')
-  .filterBounds(aoi)
-  .filterDate('2025-01-01', '2026-01-01')
-  .filter(ee.Filter.listContains('Polarizations', 'HH'))
-  .filter(ee.Filter.listContains('Polarizations', 'HV'));
-var scansarDn2025 = scansarCollection2025
-  .select(['HH', 'HV'])
-  .median();
-var scansarFeatures2025 = scansarDn2025
-  .updateMask(scansarDn2025.gt(0))
-  .pow(2)
-  .log10()
-  .multiply(10)
-  .subtract(83)
-  .rename(['ScanSAR_HH_dB', 'ScanSAR_HV_dB'])
-  .clip(aoi);
+// Annual PALSAR-2 ScanSAR (stored DN converted to gamma nought in dB).
+// Keep only acquisitions containing both HH and HV; the collection also
+// includes single-polarization scenes.
+function getScanSARFeatures(year, roi) {
+  var startDate = ee.Date.fromYMD(year, 1, 1);
+  var endDate = startDate.advance(1, 'year');
+  var collection = ee.ImageCollection('JAXA/ALOS/PALSAR-2/Level2_2/ScanSAR')
+    .filterBounds(roi)
+    .filterDate(startDate, endDate)
+    .filter(ee.Filter.listContains('Polarizations', 'HH'))
+    .filter(ee.Filter.listContains('Polarizations', 'HV'));
 
-print('2025 dual-polarization ScanSAR image count:', scansarCollection2025.size());
-print('ScanSAR predictor bands:', scansarFeatures2025.bandNames());
+  print(year + ' dual-polarization ScanSAR image count:', collection.size());
+  var dnMedian = collection.select(['HH', 'HV']).median();
+  return dnMedian
+    .updateMask(dnMedian.gt(0))
+    .pow(2)
+    .log10()
+    .multiply(10)
+    .subtract(83)
+    .rename(['ScanSAR_HH_dB', 'ScanSAR_HV_dB'])
+    .clip(roi);
+}
+
+var scansarFeatures2025 = getScanSARFeatures(2025, aoi);
+var scansarFeatures2020 = getScanSARFeatures(2020, aoi);
 
 // Sentinel-1 seasonal radar backscatter features
 var s1_seasonal_2020 = getSeasonalS1(2020, aoi).clip(aoi);
@@ -290,6 +294,12 @@ var final_stack_2025 = ee.Image.cat([
   spectral_features_2025,
   s1_seasonal_2025,
   scansarFeatures2025,
+  topo
+]).clip(aoi);
+var final_stack_2020 = ee.Image.cat([
+  spectral_features_2020,
+  s1_seasonal_2020,
+  scansarFeatures2020,
   topo
 ]).clip(aoi);
 //define the training data
@@ -327,7 +337,7 @@ var selected_feature = [
 ];
 
 var optimize_stack_25 = final_stack_2025.select(selected_feature)
-//var optimize_stack_20 = final_stack_2020.select(selected_feature)
+var optimize_stack_20 = final_stack_2020.select(selected_feature)
 
 
 //Model Training
@@ -354,9 +364,8 @@ if (RUN_TUNING) {
   var bestParams = tuning.getBestParams(tuning_result, 'accuracy');
   print('Best Hyperparameters found:', bestParams);
 }
-/*
 // Train Multi-Probability Random Forest Model
-
+var rfOptions = { nTrees: 400, vSplit: 6, minLeaf: 1, seed: 42 };
 var rf_model_2025 = clf.multiProbabilityClassification(
   trainPix,
   'new_id',
@@ -376,7 +385,6 @@ var eval_prob = clf.evaluateProbabilities(
   'new_id',
   classIdToName
 );
-print('--- 2025 Test Evaluation ---');
 print('Overall Log Loss:',           eval_prob.get('overallLogLoss'));
 print('Overall Accuracy:',        eval_prob.get('overallAccuracy'));
 print('Per-Class Log Loss:',         eval_prob.get('perClassLogLoss'));
@@ -384,4 +392,43 @@ print('Per-Class Accuracy:',         eval_prob.get('perClassAccuracy'));
 print('Per-Class Sample Count:',     eval_prob.get('perClassNSamples'));
 print('Total Test Samples:',         eval_prob.get('nSamples'));
 
-*/
+// =========================================================================
+// 6. Multi-Year Multi-Probability Inference & Post-Processing
+// =========================================================================
+
+// 2025 Probability Image
+var probs_2025 = rf_model_2025.probsImage;
+
+// 2020 Probability Image
+var probsArray_2020 = optimize_stack_20.classify(trainedModel);
+var probs_2020 = probsArray_2020.rename('probs').arrayFlatten([classBands]);
+
+
+// Apply Bayesian spatial smoothing
+var finalProbs_2025, finalProbs_2020;
+
+if (APPLY_BAYESIAN_SMOOTHING) {
+  print('Applying Bayesian spatial smoothing to probability surfaces...');
+  finalProbs_2025 = post.bayesianSmooth(probs_2025, classBands, smoothnessTL, 5, 0.5);
+  finalProbs_2020 = post.bayesianSmooth(probs_2020, classBands, smoothnessTL, 5, 0.5);
+} else {
+  finalProbs_2025 = probs_2025;
+  finalProbs_2020 = probs_2020;
+}
+
+// Export the (optionally smoothed) class probability bands as Earth Engine assets.
+[
+  {year: 2025, image: finalProbs_2025},
+  {year: 2020, image: finalProbs_2020}
+].forEach(function(result) {
+  Export.image.toAsset({
+    image: result.image.clip(aoi),
+    description: 'TL_S2_class_probabilities_' + result.year,
+    assetId: 'projects/ee-rg2/assets/TL_S2_class_probabilities_' + result.year,
+    region: aoi,
+    scale: 20,
+    crs: 'EPSG:32751',
+    maxPixels: 1e13,
+    pyramidingPolicy: {'.default': 'mean'}
+  });
+});
