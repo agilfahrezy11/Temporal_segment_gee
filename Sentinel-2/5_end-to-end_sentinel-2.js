@@ -314,3 +314,74 @@ Export.table.toDrive({
   description: 'AFCLIM_Feature_extraction_S2_2025',
   fileFormat: 'CSV'
 });
+
+//optimize predictor stack
+var selected_feature = [
+  'B11_dry', 'B11_wet', 'B12_dry', 'B12_wet', 'B2_dry', 'B2_wet',
+  'B3_dry', 'B3_wet', 'B4_dry', 'B4_wet', 'B8_dry', 'B8_wet',
+  'BLFEI_dry', 'BLFEI_wet', 'DBSI_dry', 'GBNDVI_dry', 'GBNDVI_wet',
+  'MBI_delta', 'MBI_dry', 'MBI_wet', 'MNDWI_dry', 'MNDWI_wet',
+  'MSAVI_wet', 'NDMI_delta', 'NDMI_dry', 'NDVI_dry', 'NDVI_wet',
+  'ScanSAR_HH_dB', 'ScanSAR_HV_dB', 'TWI', 'VH_dry', 'VH_wet',
+  'VV_dry', 'VV_wet', 'elevation', 'red_amp', 'slope', 'swir1_amp'
+];
+
+var optimize_stack_25 = final_stack_2025.select(selected_feature)
+//var optimize_stack_20 = final_stack_2020.select(selected_feature)
+
+
+//Model Training
+var samples = extraction.stratifiedSplit(roi, optimize_stack_25, 'new_id', 20, 0.7, 42);
+var trainPix = samples.trainingPixels;
+var testPix  = samples.testingPixels;
+
+print('Training pixel count:', trainPix.size());
+print('Testing pixel count:', testPix.size());
+
+// Optional hyperparameter grid search
+if (RUN_TUNING) {
+  var num_trees     = ee.List([100, 200, 400, 500]);
+  var variablesplit = ee.List([6, 9, 12, 19]);
+
+  var tuning_result = tuning.tuneRandomForest(
+    trainPix,
+    testPix,
+    'new_id',
+    optimize_stack_25.bandNames(),
+    num_trees,
+    variablesplit
+  );
+  var bestParams = tuning.getBestParams(tuning_result, 'accuracy');
+  print('Best Hyperparameters found:', bestParams);
+}
+/*
+// Train Multi-Probability Random Forest Model
+
+var rf_model_2025 = clf.multiProbabilityClassification(
+  trainPix,
+  'new_id',
+  classIdToName,
+  optimize_stack_25,
+  rfOptions
+);
+
+var trainedModel = rf_model_2025.trainedModel;
+var classBands   = rf_model_2025.classBands;
+var classValues  = rf_model_2025.classValues;
+
+// Evaluate probability performance on holdout test set
+var eval_prob = clf.evaluateProbabilities(
+  trainedModel,
+  testPix,
+  'new_id',
+  classIdToName
+);
+print('--- 2025 Test Evaluation ---');
+print('Overall Log Loss:',           eval_prob.get('overallLogLoss'));
+print('Overall Accuracy:',        eval_prob.get('overallAccuracy'));
+print('Per-Class Log Loss:',         eval_prob.get('perClassLogLoss'));
+print('Per-Class Accuracy:',         eval_prob.get('perClassAccuracy'));
+print('Per-Class Sample Count:',     eval_prob.get('perClassNSamples'));
+print('Total Test Samples:',         eval_prob.get('nSamples'));
+
+*/
