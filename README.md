@@ -29,7 +29,7 @@ Raw Imagery (S2 / Landsat / Sentinel-1 / PALSAR-2)
   Cloud Masking & Scaling
         │
         ▼
-  CCDC Temporal Segmentation  ◄──  Google Global CCDC (1999–2019)
+  CCDC Temporal Segmentation
   (per-pixel harmonic fit +
    break detection 2020–2025)
         │
@@ -45,12 +45,17 @@ Raw Imagery (S2 / Landsat / Sentinel-1 / PALSAR-2)
   └─────────────────────────────────────────────┘
         │
         ▼
+  Recursive Feature Elimination (Python via Google Collab)
+        │
+        ▼
+  Select optimal features
+
   Stability Filtering
   (remove training samples near CCDC breaks)
         │
         ▼
-  Random Forest Classification
-  (MULTIPROBABILITY mode, 400 trees)
+  Random Forest Hyperparameter Tuning and Classification
+  (MULTIPROBABILITY mode)
         │
         ▼
   Post-Processing
@@ -88,7 +93,7 @@ Temporal_segment_gee/
 │   ├── 2_time_series_feature_engineering.js
 │   ├── 3_time_series_model_tuning.js
 │   ├── 4_timer_series_classification_assembly.js
-│   └── 5_end-to-end_sentinel-2.js      # 2025 predictor sampling/export for RFECV
+│   └── 5_end-to-end_sentinel-2.js      # Feature extraction, RF training, and 2020/2025 probability maps
 │
 └── Landsat/                        # Landsat pipeline scripts (run in order)
     ├── 0_test_landsat_ccdc.js
@@ -133,10 +138,12 @@ All scripts run in the [GEE Code Editor](https://code.earthengine.google.com). T
 
 - Wet- and dry-season synthetic optical bands, spectral indices, and wet-minus-dry index deltas.
 - Dry-season NIR GLCM texture: contrast, entropy, angular second moment (ASM), and inverse difference moment (IDM).
-- Seasonal Sentinel-1 VV/VH medians and annual PALSAR-2 ScanSAR HH/HV backscatter for 2025.
+- Seasonal Sentinel-1 VV/VH medians and annual PALSAR-2 ScanSAR HH/HV backscatter for each target year (2020 and 2025).
 - Elevation, slope, aspect, landform, and topographic wetness index.
 
-The ScanSAR collection is filtered to 2025 acquisitions that report both HH and HV polarization. Check the printed matching-image count in the GEE Console before starting the CSV export; coverage and valid sample counts depend on the AOI and acquisition availability. The script converts ScanSAR digital numbers to gamma-nought dB using the dataset catalog formula.
+The script exports candidate 2025 sample predictors for external RFECV, then uses its configured feature list to train a multi-probability Random Forest from 2025 samples and infer probabilities for 2020 and 2025. It can optionally tune Random Forest parameters and applies Bayesian spatial smoothing by default before exporting probability bands to Earth Engine assets. The ScanSAR collection is filtered to acquisitions that report both HH and HV polarization; check the printed matching-image counts in the GEE Console because coverage depends on year and AOI. The script converts ScanSAR digital numbers to gamma-nought dB using the dataset catalog formula.
+
+For the complete Sentinel-2 workflow—including inputs, feature engineering, sampling, model evaluation, prediction, and outputs—see [Sentinel-2 Classification Workflow](SENTINEL2_CLASSIFICATION_WORKFLOW.md).
 
 ---
 
@@ -154,7 +161,7 @@ The ScanSAR collection is filtered to 2025 acquisitions that report both HH and 
 
 ## Study Area
 
-Timor-Leste (East Timor), defined by `projects/ee-rg2v2/assets/AOI_Timor_Leste_10km`.
+Timor-Leste (East Timor)
 
 ---
 
