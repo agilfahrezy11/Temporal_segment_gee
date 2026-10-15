@@ -203,18 +203,23 @@ function refineRules(hybImage) {
   var ci = hybImage.select('ci'); // 0 to 100%
 
   if (APPLY_RULE_REFINEMENT) {
-    // Rule 1: False Water Suppression (Shadow / asphalt confusion)
-    // If Winner is Waterbody (17) but Runner-up is Built-up (16) or Cleared land (15),
-    // and confusion is high (CI > 75%), reassign to the terrestrial runner-up class.
-    var falseWater = lulc.eq(17)
+    // Rule 1: False Hydrology Suppression (Catch BOTH Waterbody 17 and Dry Riverbed 18)
+    // Urban roofs, asphalt, and bare construction clearings frequently trigger high
+    // probabilities for Dry riverbed (18) or Waterbody (17).
+    // If Winner is 17 OR 18, and Runner-up is Built-up (16) or Cleared land (15),
+    // and competition is ambiguous (CI > 65%), reassign to the terrestrial runner-up class.
+    var falseHydrology = lulc.eq(17).or(lulc.eq(18))
       .and(runnerUp.eq(16).or(runnerUp.eq(15)))
-      .and(ci.gt(75));
-    lulc = lulc.where(falseWater, runnerUp);
+      .and(ci.gt(65));
+    lulc = lulc.where(falseHydrology, runnerUp);
 
     // Rule 2: Cleared Land vs. Dry Riverbed Isolation Check
-    // If Winner is Dry Riverbed (18) but Runner-up is Cleared Land (15) with high CI (> 80%),
+    // If Winner is Dry Riverbed (18) but Runner-up is Cleared Land (15) with high CI (> 75%),
     // and it occurs in non-hydrological terrain, keep Cleared Land.
-    // (Active when 18 is preserved or prior to merging)
+    var falseRiverbed = lulc.eq(18)
+      .and(runnerUp.eq(15))
+      .and(ci.gt(75));
+    lulc = lulc.where(falseRiverbed, runnerUp);
   }
 
   // Rule 3: Merge Dry riverbed (18) into Waterbody (17) post-classification
