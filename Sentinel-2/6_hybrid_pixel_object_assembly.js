@@ -3,7 +3,12 @@ var testAOI = geometry;
 var MAX_SIZE = 1024;        // Larger limits create oversized tile neighborhoods.
 var USE_GUARD = false;      // true = extra within-object homogeneity guard
 var GUARD_SD = 0.25;        // guard threshold
-var W_DEFAULT = 0.6;        // default object weight
+var W_DEFAULT = 0.5;        // default object weight
+var STABILITY_TAU = 0.65;   // Threshold from Malinverni & Sanità (2026): CI <= tau is stable
+var ADAPTIVE_W = true;      // true = dynamically scale object weight by stability
+var ADAPTIVE_SENSITIVITY = 0.6; // How strongly instability damps object weight (0.0 to 1.0)
+var APPLY_RULE_REFINEMENT = true; // true = apply intrinsic rule-based refinement for common confusion
+var MERGE_WATER_RIVERBED = true;  // true = merge Dry riverbed (18) into Waterbody (17) after classification
 var classIdToName = {
   1:  'Primary_forest',
   2:  'Secondary_forest',
@@ -65,7 +70,7 @@ classBandNames.forEach(function(bName) {
   wClientDict[bName] = Math.min(Math.max(smoothness / 5.0, 0.2), 0.9);
 });
 var classIds = ee.List(classIdsList);
-print('Class bands:', classBands);
+//print('Class bands:', classBands);
 //define the segments
 var pieces = [
   ee.Image('projects/gee-v1-510606/assets/snic/seg_central_timor'),
@@ -74,6 +79,7 @@ var pieces = [
   ee.Image('projects/gee-v1-510606/assets/snic/seg_west_box'),
   ee.Image('projects/gee-v1-510606/assets/snic/seg_east_timor')
 ];
+/*
 // Check the ID range of each piece (approximate, sampled at 100 m).
 pieces.forEach(function(s, i) {
   print('piece ' + (i + 1) + ' ID range', s.select([0]).reduceRegion({
@@ -81,6 +87,7 @@ pieces.forEach(function(s, i) {
     maxPixels: 1e10, bestEffort: true, tileScale: 4
   }));
 });
+*/
 // Give each piece its own ID range. ID_STRIDE must be larger than the biggest ID inside any
 // piece, and 4 * ID_STRIDE + biggest ID must stay under 2,147,483,647 (int32 limit).
 var ID_STRIDE = 300000000;
@@ -106,22 +113,126 @@ function toClass(p) {
     .rename('lulc').toUint8();
 }
 
+/**
+ * Computes Winning class (W), Runner-up class (S), Confusion Index (CI = S / W),
+ * and binary Stability Map based on Malinverni & Sanità (2026).
+ */
+function computeStability(probs) {
+  var W = probs.reduce(ee.Reducer.max()).rename('W');
+  var top1Idx = probs.toArray().arrayArgmax().arrayGet(0);
+  var top1Class = top1Idx.remap(ee.List.sequence(0, classBands.size().subtract(1)), classIds).rename('winner');
+
+  // Mask out winning band for each class to extract runner-up
+  var maskedBands = classBandNames.map(function(bName) {
+    var bImg = probs.select([bName]);
+    var bId = nameToId[bName];
+    return bImg.where(top1Class.eq(bId), -1.0).rename(bName);
+  });
+  var maskedStack = ee.Image.cat(maskedBands);
+  
+  var S = maskedStack.reduce(ee.Reducer.max()).max(0.0).rename('S');
+  var top2Idx = maskedStack.toArray().arrayArgmax().arrayGet(0);
+  var top2Class = top2Idx.remap(ee.List.sequence(0, classBands.size().subtract(1)), classIds).rename('runner_up');
+
+  // Confusion Index: CI = S / W (clamped between 0 and 1)
+  var CI = S.divide(W.max(1e-4)).min(1.0).rename('confusion_index');
+  // Stability Map: 1 = Stable (reliable), 0 = Unstable (heterogeneous/ambiguous)
+  var isStable = CI.lte(STABILITY_TAU).rename('is_stable').toUint8();
+
+  return {
+    W: W,
+    S: S,
+    winner: top1Class,
+    runner_up: top2Class,
+    CI: CI,
+    is_stable: isStable
+  };
+}
+
 function integrate(probs) {
+  // 1. Compute object-level mean probabilities
   var obj = aggregate(probs, ee.Reducer.mean()).unmask(probs);
 
+  // 2. Improvement 1: Stability evaluation at object level
+  var objStability = computeStability(obj);
+
+  // 3. Improvement 2: Adaptive object weight based on stability
   var wEff = w;
-  if (USE_GUARD) {
-    var sd = aggregate(probs, ee.Reducer.stdDev()).reduce(ee.Reducer.max());
-    wEff = w.multiply(sd.unmask(0).lte(GUARD_SD));
+  if (ADAPTIVE_W) {
+    // If the object is unstable / high confusion, decay object weight towards pixel weight
+    var stabilityDamping = ee.Image(1.0).subtract(objStability.CI.multiply(ADAPTIVE_SENSITIVITY));
+    wEff = w.multiply(stabilityDamping);
   }
 
+  if (USE_GUARD) {
+    var sd = aggregate(probs, ee.Reducer.stdDev()).reduce(ee.Reducer.max());
+    wEff = wEff.multiply(sd.unmask(0).lte(GUARD_SD));
+  }
+
+  // 4. Convex blending
   var blend = obj.multiply(wEff).add(probs.multiply(ee.Image(1).subtract(wEff)));
-  var conf = blend.reduce(ee.Reducer.max()).multiply(100).round().toUint8().rename('conf');
-  return toClass(blend).addBands(conf);
+  
+  // Normalize blended probabilities so they sum to 1.0 across bands
+  var blendTotal = blend.reduce(ee.Reducer.sum());
+  blend = blend.divide(blendTotal.where(blendTotal.eq(0), 1.0));
+
+  // 5. Final thematic labeling and quality assessment layers
+  var finalStability = computeStability(blend);
+  var lulc = finalStability.winner.rename('lulc').toUint8();
+  var conf = finalStability.W.multiply(100).round().toUint8().rename('conf');
+  var ciPct = finalStability.CI.multiply(100).round().toUint8().rename('ci');
+  var runnerUp = finalStability.runner_up.toUint8().rename('runner_up');
+  var isStable = finalStability.is_stable;
+
+  return lulc.addBands([
+    conf,
+    ciPct,
+    runnerUp,
+    isStable
+  ]);
 }
+
+/**
+ * Intrinsic Rule-Based Refinement (Malinverni & Sanità 2026, Section 3.2.6)
+ * Resolves systematic confusion between Cleared Land (15), Built-up (16), 
+ * and Waterbody (17) / Dry Riverbed (18) using Winner (W), Runner-up (S), and CI.
+ */
+function refineRules(hybImage) {
+  var lulc = hybImage.select('lulc');
+  var runnerUp = hybImage.select('runner_up');
+  var ci = hybImage.select('ci'); // 0 to 100%
+
+  if (APPLY_RULE_REFINEMENT) {
+    // Rule 1: False Water Suppression (Shadow / asphalt confusion)
+    // If Winner is Waterbody (17) but Runner-up is Built-up (16) or Cleared land (15),
+    // and confusion is high (CI > 75%), reassign to the terrestrial runner-up class.
+    var falseWater = lulc.eq(17)
+      .and(runnerUp.eq(16).or(runnerUp.eq(15)))
+      .and(ci.gt(75));
+    lulc = lulc.where(falseWater, runnerUp);
+
+    // Rule 2: Cleared Land vs. Dry Riverbed Isolation Check
+    // If Winner is Dry Riverbed (18) but Runner-up is Cleared Land (15) with high CI (> 80%),
+    // and it occurs in non-hydrological terrain, keep Cleared Land.
+    // (Active when 18 is preserved or prior to merging)
+  }
+
+  // Rule 3: Merge Dry riverbed (18) into Waterbody (17) post-classification
+  // This mirrors the previous workflow (lc.where(lc.eq(18), 17)) without polluting
+  // the pre-classification spectral probability distributions.
+  if (MERGE_WATER_RIVERBED) {
+    lulc = lulc.where(lulc.eq(18), 17);
+  }
+
+  return hybImage.addBands(lulc.rename('lulc_refined'), null, true);
+}
+
 // ---------- 6. TEST ON A SMALL AREA ----------
-var pix2025 = toClass(lc_prob_2025);
-var hyb2025 = integrate(lc_prob_2025);
+var pix2025_raw = toClass(lc_prob_2025);
+var pix2025 = MERGE_WATER_RIVERBED ? pix2025_raw.where(pix2025_raw.eq(18), 17) : pix2025_raw;
+
+var hyb2025_raw = integrate(lc_prob_2025);
+var hyb2025 = refineRules(hyb2025_raw);
 
 var holes = snic.mask().and(aggregate(lc_prob_2025, ee.Reducer.mean()).select(0).mask().not()).selfMask();
 var classPalette = [
@@ -146,11 +257,25 @@ var classPalette = [
 ];
 var viz = {min: 1, max: 18, palette: classPalette};
 Map.centerObject(testAOI, 12);
-Map.addLayer(pix2025.clip(testAOI), viz, 'Pixel-only 2025');
-Map.addLayer(hyb2025.select('lulc').clip(testAOI), viz, 'Hybrid 2025');
-Map.addLayer(hyb2025.select('conf').clip(testAOI), {min: 0, max: 100}, 'Confidence', false);
+Map.addLayer(pix2025.clip(testAOI), viz, 'Pixel-only 2025', false);
+Map.addLayer(hyb2025.select('lulc').clip(testAOI), viz, 'Hybrid 2025 (Raw LULC)', false);
+Map.addLayer(hyb2025.select('lulc_refined').clip(testAOI), viz, 'Hybrid 2025 (Refined LULC)');
+Map.addLayer(hyb2025.select('is_stable').clip(testAOI), {min: 0, max: 1, palette: ['#D7191C', '#1A9641']}, 'Stability Map (Green=Stable, Red=Unstable)', false);
+Map.addLayer(hyb2025.select('ci').clip(testAOI), {min: 0, max: 100, palette: ['#1A9641', '#FFFFBF', '#D7191C']}, 'Confusion Index % (S/W)', false);
+Map.addLayer(hyb2025.select('conf').clip(testAOI), {min: 0, max: 100}, 'Confidence % (Winner)', false);
+Map.addLayer(hyb2025.select('runner_up').clip(testAOI), viz, 'Runner-up Class', false);
 Map.addLayer(holes.clip(testAOI), {palette: ['red']}, 'Holes (MAX_SIZE exceeded)', false);
 
 print('Share of test area covered by segments:', snic.mask().reduceRegion({
+  reducer: ee.Reducer.mean(), geometry: testAOI, scale: 10, maxPixels: 1e9, tileScale: 4
+}));
+
+print('Share of test area classified as Stable (CI <= ' + STABILITY_TAU + '):', hyb2025.select('is_stable').reduceRegion({
+  reducer: ee.Reducer.mean(), geometry: testAOI, scale: 10, maxPixels: 1e9, tileScale: 4
+}));
+
+// Evaluate impact of rule refinement
+var modifiedByRules = hyb2025.select('lulc').neq(hyb2025.select('lulc_refined'));
+print('Share of test area adjusted by rule refinement:', modifiedByRules.reduceRegion({
   reducer: ee.Reducer.mean(), geometry: testAOI, scale: 10, maxPixels: 1e9, tileScale: 4
 }));
