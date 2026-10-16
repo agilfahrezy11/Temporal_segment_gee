@@ -75,6 +75,7 @@ To establish spatial object units without relying on expensive polygon vectoriza
 
 ### 4.1 Segment-Level Probability Vectors
 For every contiguous superpixel $S_k$, the mean posterior probability for each of the 18 classes is computed via `reduceConnectedComponents`:
+
 $$\bar{P}_c(S_k) = \frac{1}{|S_k|} \sum_{x \in S_k} P_c(x), \quad c \in \{1, 2, \dots, 18\}$$
 
 ### 4.2 Stability Map & Confusion Index (Malinverni & Sanità 2026)
