@@ -5,8 +5,8 @@ This document outlines the methodological framework and computational workflow f
 
 The core implementation is encapsulated in [`5_end-to-end_sentinel-2.js`](file:///c:/Users/AFahrezi/Documents/GitHub/Temporal_segment_gee/Sentinel-2/5_end-to-end_sentinel-2.js).
 
-The workflow addresses three persistent challenges in tropical/island land-cover mapping:
-1. **Persistent Cloud Cover:** Synthetic seasonal reconstruction via CCDC (Continuous Change Detection and Classification) eliminates cloud and shadow gaps.
+The workflow addresses three persistent challenges in tropical landscape land cover mapping:
+1. **Persistent Cloud Cover and Seasonal Variations:** Synthetic seasonal reconstruction via CCDC (Continuous Change Detection and Classification) eliminates cloud and shadow gaps. Additionally, CCDC provide consistent spectral pattern across different year which crucial for multi-temporal model transfer.
 2. **Monsoonal Phenology:** Contrasting wet-season vs. dry-season spectral behavior separates deciduous forests, plantations, and annual croplands.
 3. **Multi-Sensor Synergy:** Combining optical reflectance, phenological harmonic coefficients, radar backscatter (Sentinel-1 SAR and PALSAR-2 ScanSAR), and topographic indices into an optimized predictor stack.
 
@@ -129,7 +129,32 @@ To distinguish homogenous plantations (e.g., teak, coconut) from structurally co
 ## 5. Feature Selection & Random Forest Training
 
 ### 5.1 Optimal Predictor Stack (38 Features)
-Following Recursive Feature Elimination with Cross-Validation (RFECV), 38 predictors were identified as the optimal subset balancing computational efficiency and classification accuracy:
+The initial feature stack is optimize using Recursive Feature Elimination with Cross-Validation (RFECV). The RFECV workflow is conducting by extracting the pixel value based on the training data into CSV table. The RFECV is computed using Google Collaboratory or standard python environment. Code Snippets for the RFECV is shown below:
+```python
+#Initialize base Random Forest estimator
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import RFECV
+from sklearn.model_selection import StratifiedKFold
+rf = RandomForestClassifier(
+    n_estimators=100,
+    random_state=42,
+    n_jobs=-1)
+
+# Set up RFECV using Stratified 5-Fold Cross-Validation
+rfecv = RFECV(estimator=rf,step=1,                          
+    cv=StratifiedKFold(7, shuffle=True, random_state=42),          
+    scoring='f1_macro',              
+    min_features_to_select=15,       
+    n_jobs=-1
+)
+
+# Fit RFECV on training samples
+print("Running RFECV feature selection...")
+rfecv.fit(X, y)
+
+print(f"\nOptimal number of features selected: {rfecv.n_features_}")
+```
+The RFECV identify 38 layers as the optimal subset balancing computational efficiency and classification accuracy:
 
 | Category | Features |
 | :--- | :--- |
