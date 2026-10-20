@@ -85,7 +85,7 @@ var landform = ee.Image('projects/ee-rg2v2/assets/TPI_landform_TL')
                       .rename('landform')
                       .toByte()
                       .clip(aoi);
-var twi = ee.Image('projects/ee-rg2/assets/Top_Wetness_index')
+var twi = ee.Image('projects/ee-rg2/assets/Non_spectral_feature/Top_Wetness_index')
                   .rename('TWI')
                   .toFloat();
 
@@ -110,23 +110,16 @@ var allCandidateFeatures = landsat_wet_bands
   .concat(palsarBands);
 
 // Previous RFECV subset (for reference / deployment after running RFECV)
-var optimalFeatures = [
-  'B2_wet', 'B3_wet', 'B4_wet', 'B5_wet', 'B6_wet', 'B7_wet',
-  'B2_dry', 'B3_dry', 'B4_dry', 'B5_dry', 'B6_dry', 'B7_dry',
-  'BLFEI_delta', 'BLFEI_dry', 'BLFEI_wet', 'DBSI_delta', 'DBSI_dry', 'DBSI_wet',
-  'EVI_wet', 'GBNDVI_dry', 'GBNDVI_wet', 'MBI_delta', 'MBI_dry',
-  'MNDWI_delta', 'MNDWI_dry', 'MNDWI_wet', 'MSAVI_delta', 'MSAVI_wet',
-  'NDMI_delta', 'NDMI_dry', 'NDVI_dry', 'NDVI_wet',
-  'NIR_amp', 'NIR_phase', 'RED_amp', 'SWIR1_amp',
-  'elevation', 'slope', 'aspect', 'landform', 'TWI',
-  'nir_contrast', 'nir_ent', 'nir_asm', 'nir_corr',
-  'palsar_HH', 'palsar_HV', 'palsar_HH_HV_diff'
-];
+var optimalFeatures = ["AWEIsh_delta", "AWEIsh_dry", "AWEIsh_wet", "B2_dry", "B2_wet", "B3_dry", "B3_wet", 
+                     "B4_dry", "B4_wet", "B5_dry", "B6_dry", "B6_wet", "B7_dry", "B7_wet", "BLFEI_dry", "BLFEI_wet", 
+                     "DBSI_delta", "DBSI_dry", "DBSI_wet", "EVI_wet", "GNDVI_dry", "GNDVI_wet", "MBI_delta", "MBI_dry", "MNDWI_dry", 
+                     "MNDWI_wet", "NDTI_delta", "NDTI_dry", "NDVI_wet", "NIR_phase", "RED_amp", "SWIR1_amp", 
+                     "UI_dry", "UI_wet", "elevation", "nir_contrast", "palsar_HH", "palsar_HV", "slope"];
 
 // Feature Pool Selector:
 // Set to TRUE to extract and train on all 73 candidate features (e.g. for generating RFECV table)
 // Set to FALSE to use your pruned optimalFeatures list after RFECV is complete
-var USE_FULL_CANDIDATE_POOL = true;
+var USE_FULL_CANDIDATE_POOL = false;
 
 var selectedFeatures = USE_FULL_CANDIDATE_POOL ? allCandidateFeatures : optimalFeatures;
 
@@ -181,18 +174,18 @@ var smoothnessTL = {
 
 // Execution toggles
 var RUN_TUNING               = false; // Set to true to run RF grid search
-var APPLY_BAYESIAN_SMOOTHING = true;  // Set to true to apply spatial Bayesian smoothing
+var APPLY_BAYESIAN_SMOOTHING = false;  // Set to true to apply spatial Bayesian smoothing
 
 // Random Forest default hyperparameters (calibrated from tuning)
 var rfOptions = {
-  nTrees:  500,
-  vSplit:  19,    // ~sqrt(36 features), or specify e.g. 19
+  nTrees:  100,
+  vSplit:  21,    // ~sqrt(36 features), or specify e.g. 19
   minLeaf: 1,
   seed:    42
 };
 
 // Export configuration
-var EXPORT_ASSET_PREFIX = 'projects/ee-agilfahrezy60/assets/LC_prob_';
+var EXPORT_ASSET_PREFIX = 'projects/gee-v1-510606/assets/LC_prob_';
 var EXPORT_CRS          = 'EPSG:32751';
 var EXPORT_SCALE        = 30;
 
@@ -249,7 +242,6 @@ function computeIndicesFromSynth(synthImg, suffix) {
  * Epoch proxy mapping:
  * - 2005: uses 2007 (PALSAR-1 earliest available yearly mosaic)
  * - 2015: uses 2015 (PALSAR-2 yearly mosaic)
- * - 2020: uses 2020 with 2019-2021 fallback unmasking to heal orbital gaps
  * - 2025: uses 2024 (PALSAR-2 most recent available yearly mosaic)
  * Formula: gamma0_dB = 10 * log10(DN^2) - 83.0
  */
@@ -361,16 +353,16 @@ function buildYearFeatures(ccdc, year, tol, coefScale) {
 }
 
 // Build feature stacks for each epoch from the unified Landsat CCDC mosaic
-print('Building feature stacks for 2025, 2020, 2015, and 2005 from unified Landsat CCDC mosaic...');
+//print('Building feature stacks for 2025, 2015, and 2005 from unified Landsat CCDC mosaic...');
 var features_2025 = buildYearFeatures(landsat_ccdc, 2025, TOL, CCDC_COEF_SCALE);
-var features_2020 = buildYearFeatures(landsat_ccdc, 2020, TOL, CCDC_COEF_SCALE);
+var features_2020 = buildYearFeatures(landsat_ccdc, 2020, TOL, CCDC_COEF_SCALE)
 var features_2015 = buildYearFeatures(landsat_ccdc, 2015, TOL, CCDC_COEF_SCALE);
 var features_2005 = buildYearFeatures(landsat_ccdc, 2005, TOL, CCDC_COEF_SCALE);
+Map.addLayer(features_2020, {}, "Feature 2020")
 
-print('2025 Feature Stack:', features_2025);
-print('2020 Feature Stack:', features_2020);
-print('2015 Feature Stack:', features_2015);
-print('2005 Feature Stack:', features_2005);
+//print('2025 Feature Stack:', features_2025);
+//print('2015 Feature Stack:', features_2015);
+//print('2005 Feature Stack:', features_2005);
 
 // =========================================================================
 // 5. Sample Extraction & Model Training (2025 Ground Truth)
@@ -396,21 +388,21 @@ if (EXPORT_RFECV_SAMPLE_TABLE) {
     description: 'TL_Landsat_Predictor_Matrix_RFECV',
     fileFormat: 'CSV'
   });
-  print('RFECV Table Export registered: "TL_Landsat_Predictor_Matrix_RFECV" (Run via Tasks tab)');
+  //print('RFECV Table Export registered: "TL_Landsat_Predictor_Matrix_RFECV" (Run via Tasks tab)');
 }
 
 // Stratified train/test split (70% train, 30% test)
-var samples = extraction.stratifiedSplit(roi, features_2025, 'new_id', 30, 0.7, 42);
+var samples = extraction.stratifiedSplit(roi, features_2025, 'new_id', 30, 0.75, 42);
 var trainPix = samples.trainingPixels;
 var testPix  = samples.testingPixels;
 
-print('Training pixel count:', trainPix.size());
-print('Testing pixel count:', testPix.size());
+//print('Training pixel count:', trainPix.size());
+//print('Testing pixel count:', testPix.size());
 
 // Optional hyperparameter grid search
 if (RUN_TUNING) {
   print('Running Random Forest hyperparameter tuning...');
-  var num_trees     = ee.List([100, 200, 400, 500]);
+  var num_trees     = ee.List([100, 200, 400]);
   var variablesplit = ee.List([6, 9, 12, 19]);
 
   var tuning_result = tuning.tuneRandomForest(
@@ -419,14 +411,18 @@ if (RUN_TUNING) {
     'new_id',
     selectedFeatures,
     num_trees,
-    variablesplit,
-    ee.List([1]),
-    42
+    variablesplit
   );
   var bestParams = tuning.getBestParams(tuning_result, 'accuracy');
   print('Best Hyperparameters found:', bestParams);
 }
-
+/*
+accuracy: 0.7692307692307693
+kappa: 0.7532857458068258
+minLeafPopulation: 1
+numberOfTrees: 100
+variablesPerSplit: 12
+*/
 // Train Multi-Probability Random Forest Model
 print('Training MultiProbability Random Forest Model...');
 var rf_model_2025 = clf.multiProbabilityClassification(
@@ -440,7 +436,7 @@ var rf_model_2025 = clf.multiProbabilityClassification(
 var trainedModel = rf_model_2025.trainedModel;
 var classBands   = rf_model_2025.classBands;
 var classValues  = rf_model_2025.classValues;
-
+/*
 // Evaluate probability performance on holdout test set
 var eval_prob = clf.evaluateProbabilities(
   trainedModel,
@@ -455,7 +451,7 @@ print('Per-Class Log Loss:',         eval_prob.get('perClassLogLoss'));
 print('Per-Class Accuracy:',         eval_prob.get('perClassAccuracy'));
 print('Per-Class Sample Count:',     eval_prob.get('perClassNSamples'));
 print('Total Test Samples:',         eval_prob.get('nSamples'));
-
+*/
 // =========================================================================
 // 6. Multi-Year Multi-Probability Inference & Post-Processing
 // =========================================================================
@@ -463,20 +459,20 @@ print('Total Test Samples:',         eval_prob.get('nSamples'));
 // 2025 Probability Image
 var probs_2025 = rf_model_2025.probsImage;
 
-// 2020 Probability Image
-var probsArray_2020 = features_2020.classify(trainedModel);
-var probs_2020 = probsArray_2020.rename('probs').arrayFlatten([classBands]);
-
 // 2015 Probability Image
 var probsArray_2015 = features_2015.classify(trainedModel);
 var probs_2015 = probsArray_2015.rename('probs').arrayFlatten([classBands]);
+
+//2020
+var probsArray_2020 = features_2020.classify(trainedModel)
+var probs_2020 = probsArray_2020.rename('probs').arrayFlatten([classBands])
 
 // 2005 Probability Image
 var probsArray_2005 = features_2005.classify(trainedModel);
 var probs_2005 = probsArray_2005.rename('probs').arrayFlatten([classBands]);
 
 // Apply Bayesian spatial smoothing
-var finalProbs_2025, finalProbs_2020, finalProbs_2015, finalProbs_2005;
+var finalProbs_2025, finalProbs_2015, finalProbs_2020, finalProbs_2005;
 
 if (APPLY_BAYESIAN_SMOOTHING) {
   print('Applying Bayesian spatial smoothing to probability surfaces...');
@@ -490,10 +486,9 @@ if (APPLY_BAYESIAN_SMOOTHING) {
   finalProbs_2015 = probs_2015;
   finalProbs_2005 = probs_2005;
 }
-
+/*
 // Generate quick preview land cover maps (argmax)
 var lc_preview_2025 = post.classifyFromProbs(finalProbs_2025, classBands, classValues);
-var lc_preview_2020 = post.classifyFromProbs(finalProbs_2020, classBands, classValues);
 var lc_preview_2015 = post.classifyFromProbs(finalProbs_2015, classBands, classValues);
 var lc_preview_2005 = post.classifyFromProbs(finalProbs_2005, classBands, classValues);
 
@@ -505,7 +500,6 @@ Map.centerObject(aoi, 9);
 
 var rgbVis = {bands: ['B4_dry', 'B3_dry', 'B2_dry'], min: 0.02, max: 0.22};
 Map.addLayer(features_2025, rgbVis, '2025 Dry Season RGB (Synthetic)', false);
-Map.addLayer(features_2020, rgbVis, '2020 Dry Season RGB (Synthetic)', false);
 Map.addLayer(features_2015, rgbVis, '2015 Dry Season RGB (Synthetic)', false);
 Map.addLayer(features_2005, rgbVis, '2005 Dry Season RGB (Synthetic)', false);
 
@@ -535,10 +529,9 @@ var classVis = {
 };
 
 Map.addLayer(lc_preview_2025, classVis, 'Preview LC 2025 (Argmax)', false);
-Map.addLayer(lc_preview_2020, classVis, 'Preview LC 2020 (Argmax)', false);
 Map.addLayer(lc_preview_2015, classVis, 'Preview LC 2015 (Argmax)', false);
 Map.addLayer(lc_preview_2005, classVis, 'Preview LC 2005 (Argmax)', false);
-
+*/
 // =========================================================================
 // 8. Export Multi-Band Probabilities to Assets
 // =========================================================================
@@ -566,5 +559,5 @@ probYears.forEach(function(item) {
   });
 });
 
-print('Probability export tasks registered for 2025, 2020, 2015, and 2005.');
+print('Probability export tasks registered for 2025, 2015, and 2005.');
 print('Open the Tasks tab in the Code Editor to run the exports.');
