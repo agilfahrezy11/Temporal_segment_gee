@@ -243,6 +243,7 @@ function computeIndicesFromSynth(synthImg, suffix) {
  * - 2005: uses 2007 (PALSAR-1 earliest available yearly mosaic)
  * - 2015: uses 2015 (PALSAR-2 yearly mosaic)
  * - 2025: uses 2024 (PALSAR-2 most recent available yearly mosaic)
+ * SCANSAR data is not used due to additional preprocessing required
  * Formula: gamma0_dB = 10 * log10(DN^2) - 83.0
  */
 function getPalsarBackscatter(year) {
@@ -391,13 +392,27 @@ if (EXPORT_RFECV_SAMPLE_TABLE) {
   //print('RFECV Table Export registered: "TL_Landsat_Predictor_Matrix_RFECV" (Run via Tasks tab)');
 }
 
-// Stratified train/test split (70% train, 30% test)
+// Stratified train/test split (75% train, 25% test)
 var samples = extraction.stratifiedSplit(roi, features_2025, 'new_id', 30, 0.75, 42);
 var trainPix = samples.trainingPixels;
 var testPix  = samples.testingPixels;
+var testFC   = samples.testFC; // Vector holdout set preserving original geometries & ground-truth attributes
 
 //print('Training pixel count:', trainPix.size());
 //print('Testing pixel count:', testPix.size());
+
+// Export holdout testing vector data to Google Drive as GeoJSON
+var EXPORT_TEST_DATA_GEOJSON = true;
+
+if (EXPORT_TEST_DATA_GEOJSON) {
+  Export.table.toDrive({
+    collection:  testFC,
+    description: 'TL_Landsat_2025_Testing_Data_GeoJSON',
+    fileNamePrefix: 'TL_Landsat_2025_Testing_Data',
+    fileFormat:  'GeoJSON'
+  });
+  print('Testing Data GeoJSON Export registered: "TL_Landsat_2025_Testing_Data_GeoJSON"');
+}
 
 // Optional hyperparameter grid search
 if (RUN_TUNING) {
