@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
 
-A reproducible, high-resolution remote sensing framework for multi-temporal land use/land cover (LULC) classification and change detection across Timor-Leste. The pipeline couples **Google Earth Engine (GEE)** cloud-based continuous time-series modeling with a **streaming windowed Python post-processing engine**, producing wall-to-wall LULC maps for **2020** and **2025** at 10 m (Sentinel-2) and 30 m (Landsat) resolution.
+A reproducible, high-resolution remote sensing framework for multi-temporal land use/land cover (LULC) classification and change detection across Timor-Leste. The pipeline implements **Google Earth Engine (GEE)** cloud-based continuous time-series modeling, multi-sensor feature engineering, and class probability estimation, producing wall-to-wall LULC maps and probability cubes for **2020** and **2025** at 10 m (Sentinel-2) and 30 m (Landsat) resolution. Prototype and utility Python scripts are included for raster mosaicking, stacking, and downstream hybrid assembly (which mirrors the dedicated production hybrid assembly repository).
 
 ---
 
@@ -186,10 +186,10 @@ Temporal_segment_gee/
 │   ├── 4_Landsat_classification_assembly.js        # Landsat classification assembly
 │   └── 5_end-to-end_Landsat.js           # Integrated end-to-end Landsat pipeline
 │
-├── python/                               # Local streaming windowed assembly & GIS utilities
-│   ├── hybrid_assembly.py                # Out-of-core hybrid assembly, CI calculation & stability map
+├── python/                               # Downstream utilities & assembly prototypes (reference)
+│   ├── hybrid_assembly.py                # Reference streaming windowed assembly & stability map
 │   ├── raster_mosaic_stack.py            # Multiband raster stacking and mosaic generator
-│   └── object-pixel_assembly.ipynb       # Interactive workflow walkthrough notebook
+│   └── object-pixel_assembly.ipynb       # Demonstration workflow walkthrough notebook
 │
 ├── docs/                                 # Technical documentation & AI developer guides
 │   ├── CLASSIFICATION_WORKFLOW.md        # Comprehensive multi-sensor operational context
@@ -221,29 +221,32 @@ All `.js` scripts run directly in the [Google Earth Engine Code Editor](https://
 4. **Export for Python Post-Processing**:
    - Run `Sentinel-2/7_export_probabilities_and_segments.js` to export aligned GeoTIFFs of the 18 probability bands and segment ID grids.
 
-### Phase 2: Python Hybrid Assembly & Cartography
-Post-processing can be executed either directly in GEE (`Sentinel-2/6_hybrid_pixel_object_assembly.js`) or via the local Python engine (`python/hybrid_assembly.py`), which handles out-of-core streaming and signed 32-bit integer overflow.
+### Phase 2: Hybrid Pixel–Object Assembly & Final Cartography
+The hybrid pixel-object classification can be evaluated and executed in two environments:
+1. **In Earth Engine (Direct GEE execution)**:
+   - Run `Sentinel-2/6_hybrid_pixel_object_assembly.js` directly in the Code Editor to evaluate adaptive blending, confidence, confusion index, and rule refinement on GEE assets.
+2. **Local Python Post-Processing (Out-of-core streaming)**:
+   - The [`python/`](python/) folder provides reference prototype scripts (`hybrid_assembly.py`) that implement the exact out-of-core streaming architecture, 32-bit ID overflow handling, and stability mapping used in the dedicated production hybrid assembly repository.
+   - Install dependencies:
+     ```bash
+     pip install numpy rasterio scipy
+     ```
+   - Run reference assembly:
+     ```python
+     from python.hybrid_assembly import run_hybrid_pipeline
 
-1. **Install Python Dependencies**:
-   ```bash
-   pip install numpy rasterio scipy
-   ```
-2. **Run Hybrid Assembly**:
-   ```python
-   from python.hybrid_assembly import run_hybrid_pipeline
-
-   run_hybrid_pipeline(
-       prob_raster_path="path/to/TL_2025_probabilities_18bands.tif",
-       snic_raster_path="path/to/TL_2025_snic_segments.tif",
-       output_dir="output/2025/",
-       block_size=2048,
-       padding=64
-   )
-   ```
-   **Deliverables produced**:
-   - `LULC_thematic_map.tif`: Final discrete classified map (Classes 1–17).
-   - `stability_map.tif`: Binary classification stability flag ($CI \le 0.65$).
-   - `confusion_index.tif`: Continuous decision ambiguity raster ($0.0 \le CI \le 1.0$).
+     run_hybrid_pipeline(
+         prob_raster_path="path/to/TL_2025_probabilities_18bands.tif",
+         snic_raster_path="path/to/TL_2025_snic_segments.tif",
+         output_dir="output/2025/",
+         block_size=2048,
+         padding=64
+     )
+     ```
+   - **Deliverables produced**:
+     - `LULC_thematic_map.tif`: Final discrete classified map (Classes 1–17).
+     - `stability_map.tif`: Binary classification stability flag ($CI \le 0.65$).
+     - `confusion_index.tif`: Continuous decision ambiguity raster ($0.0 \le CI \le 1.0$).
 
 ---
 
