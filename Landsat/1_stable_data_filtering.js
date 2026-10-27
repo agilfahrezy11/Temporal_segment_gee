@@ -1,7 +1,7 @@
 /**
  * =========================================================================
  * Script: 1_stable_data_filtering.js
- * Project: Temporal Segment GEE - Timor-Leste Land Cover Mapping
+
  *
  * Description:
  * Evaluates CCDC temporal stability across target historical epochs
@@ -23,9 +23,7 @@ var ccdc_module = require('users/rg2icraf/Luma:ccdc_landsat');
 var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry();
 
 // Update this asset path to your uploaded testing / ground-truth FeatureCollection
-var inputSamples = ee.FeatureCollection(
-  'projects/ee-rg2/assets/Samples/Samples_TL_2025_augment_cocoa'
-);
+var inputSamples = ee.FeatureCollection('projects/ee-rg2/assets/Ground_Reference_2025_combine');
 
 // 2. Load 5-Tile Unified Landsat CCDC Mosaic (2000-2025) — aligned with 5_end-to-end_Landsat.js
 var img1 = ee.Image('projects/ee-agilfahrezy60/assets/Landsat_CCDC_TL/CCDC_2000_2025_central');
@@ -52,11 +50,12 @@ var MAX_CUMULATIVE_DRIFT = 0.12;  // Max allowable |slope * deltaYears| in surfa
  * @returns {ee.Image} Binary stability band (1 = stable, 0 = changed/gap).
  */
 function stableInPeriod(ccdcImage, startYear, endYear, bandName) {
-  // Condition 1: No CCDC breakpoint inside [startYear, endYear]
+  // Condition 1: No confirmed CCDC breakpoint (changeProb == 1) inside [startYear, endYear]
   var tBreak = ccdcImage.select('tBreak');
   var changeProb = ccdcImage.select('changeProb');
-  var breaksInWindow = tBreak.arrayMask(
-    tBreak.gte(startYear).and(tBreak.lte(endYear)).and(changeProb.gt(0))
+  var confirmedBreak = tBreak.multiply(changeProb.eq(1));
+  var breaksInWindow = confirmedBreak.arrayMask(
+    confirmedBreak.gte(startYear).and(confirmedBreak.lte(endYear))
   );
   var noBreak = breaksInWindow.arrayLength(0).eq(0);
 
@@ -98,8 +97,9 @@ var stable2015 = stableInPeriod(landsat_ccdc, 2015.0, 2025.99, 'stable_2015');
 var stable2005 = stableInPeriod(landsat_ccdc, 2005.0, 2025.99, 'stable_2005');
 var stable2000 = stableInPeriod(landsat_ccdc, 2000.0, 2025.99, 'stable_2000');
 
-// Most recent breakpoint year (0 if no break ever occurred)
+// Most recent confirmed breakpoint year (0 if no confirmed break ever occurred)
 var lastBreakYear = landsat_ccdc.select('tBreak')
+  .multiply(landsat_ccdc.select('changeProb').eq(1))
   .arrayReduce(ee.Reducer.max(), [0])
   .arrayGet([0])
   .toFloat()
@@ -128,6 +128,7 @@ var samplesWithStability = stabilityStack.reduceRegions({
   collection: inputSamples,
   reducer: combinedReducer,
   scale: 30,
+  crs: 'EPSG:32751',
   tileScale: 4
 });
 
@@ -143,7 +144,7 @@ print('Stable Samples (2020-2025):', stableSamples2020.size());
 print('Stable Samples (2015-2025):', stableSamples2015.size());
 print('Stable Samples (2005-2025):', stableSamples2005.size());
 print('Stable Samples (2000-2025):', stableSamples2000.size());
-print('Stable 2005-2025 Samples by Class:', stableSamples2005.aggregate_histogram('new_id'));
+print('Stable 2005-2025 Samples by Class:', stableSamples2005.aggregate_histogram('Class_id'));
 
 // 7. Map Visualization
 Map.centerObject(aoi, 9);
