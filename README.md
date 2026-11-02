@@ -1,4 +1,4 @@
-# Multi-Temporal Land Cover Classification & Hybrid Pixel–Object Assembly — Timor-Leste
+# Multi-Temporal Land Cover Classification
 
 [![Google Earth Engine](https://img.shields.io/badge/Google%20Earth%20Engine-API%20JavaScript-blue.svg)](https://earthengine.google.com/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://www.python.org/)
