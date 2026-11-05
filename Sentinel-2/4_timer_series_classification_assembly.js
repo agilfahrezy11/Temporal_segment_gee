@@ -2,43 +2,21 @@
 TIME SERIES CLASSIFICATION ASSEMBLY without masked layer, temporal consistency
 */
 /////////1. Setup/////////
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry()
+var cfg  = require('users/rg2icraf/Luma:config');
+var aoi  = ee.FeatureCollection(cfg.AOI_ASSET).geometry();
 //post processing module
-var post = require('users/rg2icraf/Luma:post_process')
-var clf = require('users/rg2icraf/Luma:classify_model')
+var post = require('users/rg2icraf/Luma:post_process');
+var clf  = require('users/rg2icraf/Luma:classify_model');
 //Probability based land cover
-var lc_prob_2025 = ee.Image('projects/ee-rg2/assets/LC_probs_2025_TL_CCDC').divide(10000)
-var lc_prob_2020 = ee.Image('projects/ee-rg2/assets/LC_probs_2020_TL_CCDC').divide(10000)
+var lc_prob_2025 = ee.Image('projects/ee-rg2/assets/LC_probs_2025_TL_CCDC').divide(10000);
+var lc_prob_2020 = ee.Image('projects/ee-rg2/assets/LC_probs_2020_TL_CCDC').divide(10000);
 
 /////////2. Define Land Cover Class and Smoothing Parameter/////////
-//class name
-var class_bands = ee.List(['Primary_forest', 'Secondary_forest', 'Mangrove_forest' ,'Coastal_forest',
-                  'Teak_plantation', 'Eucalyptus_plantation', 'Coffe_agroforestry', 'Cocoa_agroforestry', 
-                  'Coconut_agroforestry', 'Mixed_garden', 'Paddy_field', 'Other_cropland', 'Grassland', 'Shrubland', 
-                  'Cleared_land', 'Built-up', 'Waterbody', 'Dry_riverbed']);
-//class id
-var class_value = ee.List([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18])
-//Smoothing_parameter
-var smoothness = {
-  'Primary_forest': 4.5,       
-  'Secondary_forest': 4,    
-  'Mangrove_forest': 2.5,
-  'Coastal_forest': 2.7,
-  'Teak_plantation': 1.0,
-  'Eucalyptus_plantation': 1.0,
-  'Coffe_agroforestry': 1.0,   
-  'Cocoa_agroforestry': 1.0,
-  'Coconut_agroforestry': 1.0,
-  'Mixed_garden': 0.8,
-  'Paddy_field': 0.8,        
-  'Other_cropland': 0.8,
-  'Grassland': 2.5,
-  'Shrubland': 2.5,
-  'Cleared_land': 1.4,
-  'Built-up': 1,            
-  'Waterbody': 1.5,
-  'Dry_riverbed': 0.5         
-}
+//class name & values — sourced from cfg
+var class_bands = cfg.CLASS_BANDS;
+var class_value = cfg.CLASS_VALUES;
+//Smoothing_parameter — sourced from cfg
+var smoothness  = cfg.SMOOTHNESS;
 
 /////////2. Implement post-processing bayesian smoothing/////////
 
@@ -243,33 +221,17 @@ print('Share of pixels that changed class, after', lc_final_2020.neq(lc_final_20
 Map.addLayer(lc_final_2020, classVis, 'Final LC 2020');
 Map.addLayer(lc_final_2025, classVis, 'Final LC 2025');
 
-print(lc_final_2025)
-//Export if already goood
-Export.image.toDrive({
-    image: lc_final_2020 , 
-    description: 'LULC_S2_2020', 
-    scale: 10, 
-    region: aoi, 
-    folder: 'AFCLIM_LC', 
-    crs: 'EPSG:32751',
-    fileFormat: 'GeoTIFF', 
-    maxPixels: 1e13,
-    formatOptions: {
-    cloudOptimized: true
-      },
-      });
-  
-Export.image.toDrive({
-    image: lc_final_2025 , 
-    description: 'LULC_S2_2025_smoothing', 
-    scale: 10, 
-    region: aoi, 
-    folder: 'AFCLIM_LC', 
-    crs: 'EPSG:32751',
-    fileFormat: 'GeoTIFF', 
-    maxPixels: 1e13,
-    formatOptions: {
-    cloudOptimized: true
-      },
-      });
+print(lc_final_2025);
+//Export if already goood — using cfg.toDrive
+cfg.toDrive(lc_final_2020, 'LULC_S2_2020', {
+  folder: 'AFCLIM_LC',
+  region: aoi,
+  scale:  cfg.SCALE.S2_fine
+});
+
+cfg.toDrive(lc_final_2025, 'LULC_S2_2025_smoothing', {
+  folder: 'AFCLIM_LC',
+  region: aoi,
+  scale:  cfg.SCALE.S2_fine
+});
   
