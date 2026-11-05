@@ -21,10 +21,12 @@
  * 
 */
 // Area of Interest (Timor-Leste + 10km buffer)
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry();
+var cfg         = require('users/rg2icraf/Luma:config');
+var aoi         = ee.FeatureCollection(cfg.AOI_ASSET).geometry();
 //Import required modules
 var spectral    = require('users/dmlmont/spectral:spectral');
 var ccdc_module = require('users/rg2icraf/Luma:ccdc_sentinel2');
+var feats       = require('users/rg2icraf/Luma:features');
 var extraction  = require('users/rg2icraf/Luma:extract_split_data');
 var clf         = require('users/rg2icraf/Luma:classify_model');
 var tuning      = require('users/rg2icraf/Luma:tune_model');
@@ -35,12 +37,8 @@ var post        = require('users/rg2icraf/Luma:post_process');
  * 
 */
 
-// Seasonal fraction settings
-var T = {
-  dry:  0.65,   // ~August (Peak dry season)
-  wet:  0.16,   // ~March (Peak wet season)
-  harm: 0.50    // Mid-year evaluation for nearest segment harmonics
-};
+// Seasonal fraction settings — sourced from cfg
+var T = cfg.T;
 
 // Spectral indices to compute
 var baseIndexList = ['BLFEI', 'DBSI', 'GBNDVI', 'MBI', 'MNDWI', 'MSAVI', 'NDMI', 'NDVI'];
@@ -50,49 +48,11 @@ var deltaIndexList = ['BLFEI', 'DBSI', 'MBI', 'MNDWI', 'MSAVI', 'NDMI'];
 // Target years to process
 var targetYears = [2025, 2020];
 
-// Class schema (18 classes)
-var classIdToName = {
-  1:  'Primary_forest',
-  2:  'Secondary_forest',
-  3:  'Mangrove_forest',
-  4:  'Coastal_forest',
-  5:  'Teak_plantation',
-  6:  'Eucalyptus_plantation',
-  7:  'Coffe_agroforestry',
-  8:  'Cocoa_agroforestry',
-  9:  'Coconut_agroforestry',
-  10: 'Mixed_garden',
-  11: 'Paddy_field',
-  12: 'Other_cropland',
-  13: 'Grassland',
-  14: 'Shrubland',
-  15: 'Cleared_land',
-  16: 'Built-up',
-  17: 'Waterbody',
-  18: 'Dry_riverbed'
-};
+// Class schema (18 classes) — sourced from cfg
+var classIdToName = cfg.CLASS_SCHEMA;
 
-// Bayesian smoothing parameters per class
-var smoothnessTL = {
-  'Primary_forest':        4.5,
-  'Secondary_forest':      3.0,
-  'Mangrove_forest':       3.0,
-  'Coastal_forest':        3.5,
-  'Teak_plantation':       1.2,
-  'Eucalyptus_plantation': 1.2,
-  'Coffe_agroforestry':    1.5,
-  'Cocoa_agroforestry':    1.5,
-  'Coconut_agroforestry':  1.5,
-  'Mixed_garden':          1.2,
-  'Paddy_field':           1.0,
-  'Other_cropland':        1.0,
-  'Grassland':             1.5,
-  'Shrubland':             1.5,
-  'Cleared_land':          1.5,
-  'Built-up':              1,
-  'Waterbody':             4.0,
-  'Dry_riverbed':          0.1
-};
+// Bayesian smoothing parameters per class — sourced from cfg
+var smoothnessTL = cfg.SMOOTHNESS;
 
 // Execution toggles
 var RUN_TUNING               = false; // Set to true to run RF grid search
@@ -111,52 +71,15 @@ var rfOptions = {
  * 
 */
 
-//define CCDC assets
-var tl_ccdc1 = ee.Image('projects/ee-rg2v2/assets/CCDC_TL_2020_2025_20m_westbox')
-var tl_ccdc2 = ee.Image('projects/earth-engine-v1-504707/assets/CCDC_TL_2020_2025_20m_east-timor')
-var tl_ccdc3 = ee.Image('projects/earth-engine-v1-504707/assets/CCDC_TL_2020_2025_20m_off_dili')
-var tl_ccdc4 = ee.Image('projects/gee-v1-510606/assets/CCDC_TL_2020_2025_20m_central-timor')
-var tl_ccdc5 = ee.Image('projects/earth-engine-v1-504707/assets/CCDC_TL_2020_2025_20m_east_box')
-
-//combine them into a single mosaic
-var ccdc_mosaic = ee.ImageCollection([tl_ccdc1, tl_ccdc2, tl_ccdc3, tl_ccdc4, tl_ccdc5]).mosaic().clip(aoi);
-print(ccdc_mosaic)
+//define CCDC assets — asset IDs sourced from cfg
+var ccdc_mosaic = cfg.loadCCDCTiles(cfg.S2_CCDC_TILES, aoi);
+print(ccdc_mosaic);
 
 /**
  * Build Feature set for the target year
- * 
-*/
-
-/**
- * Computes required spectral indices on an already reconstructed synthetic image.
  */
-function computeIndicesFromSynth(synthImg, suffix) {
-  var imgForIndices = synthImg.select(
-    ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'],
-    ['B2',   'B3',    'B4',  'B8',  'B11',    'B12']
-  );
-  var param = {
-    'B':  imgForIndices.select('B2'),
-    'G':  imgForIndices.select('B3'),
-    'R':  imgForIndices.select('B4'),
-    'N':  imgForIndices.select('B8'),
-    'S1': imgForIndices.select('B11'),
-    'S2': imgForIndices.select('B12'),
-    'C1': 6.0,
-    'C2': 7.5,
-    'g':  2.5,
-    'L':  1.0
-  };
-  var computed = spectral.computeIndex(imgForIndices, baseIndexList, param)
-    .select(baseIndexList);
-  var renamed = baseIndexList.map(function(b) {
-    return ee.String(b).cat('_').cat(suffix);
-  });
-  return computed.rename(renamed);
-}
 
 //function to build the feature stack for a given year using CCDC synthetic imagery
-//use spectral index
 function buildYearFeatures(ccdc, year) {
   // 1. Synthetic imagery for wet & dry seasons (single pass per season)
   var synthWet = ccdc_module.getSyntheticStack(
@@ -176,24 +99,15 @@ function buildYearFeatures(ccdc, year) {
     ['B2_dry', 'B3_dry', 'B4_dry', 'B8_dry', 'B11_dry', 'B12_dry']
   );
 
-  // 3. GLCM texture from dry-season NIR
-  var glcm = synthDry.select('nir', ['B8'])
-    .multiply(1000)
-    .toInt32()
-    .glcmTexture({size: 1});
-  var glcmFeatures = glcm.select(['B8_contrast','B8_ent','B8_asm','B8_idm']);
+  // 3. GLCM texture from dry-season NIR (sourced from feats)
+  var glcmFeatures = feats.getGlcmTexture(synthDry.select('nir'));
 
   // 4. Compute spectral indices directly from existing synthetic stacks
-  var wetIndices = computeIndicesFromSynth(synthWet, 'wet');
-  var dryIndices = computeIndicesFromSynth(synthDry, 'dry');
+  var wetIndices = feats.computeSeasonalIndices(synthWet, 'S2', baseIndexList, 'wet');
+  var dryIndices = feats.computeSeasonalIndices(synthDry, 'S2', baseIndexList, 'dry');
 
   // 5. Compute phenological seasonal deltas (wet - dry)
-  var deltaImages = deltaIndexList.map(function(idx) {
-    return wetIndices.select(idx + '_wet')
-      .subtract(dryIndices.select(idx + '_dry'))
-      .rename(idx + '_delta');
-  });
-  var deltaIndices = ee.Image.cat(deltaImages);
+  var deltaIndices = feats.computePhenologicalDeltas(wetIndices, dryIndices, deltaIndexList);
 
   // 6. CCDC Harmonics (NIR, RED, SWIR1)
   var harmImgs = ccdc_module.getHarmonics(
@@ -213,81 +127,26 @@ function buildYearFeatures(ccdc, year) {
 
   return candidateStack.toFloat().clip(aoi);
 }
-function getSeasonalS1(year, roi) {
-  var startDate = ee.Date.fromYMD(year, 1, 1);
-  var endDate   = ee.Date.fromYMD(year, 12, 31);
 
-  var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
-    .filterBounds(roi)
-    .filterDate(startDate, endDate)
-    .filter(ee.Filter.eq('instrumentMode', 'IW'))
-    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
-    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
-    .select(['VV', 'VH']);
-
-  //Monsoonal Splitting
-  var wet = s1.filter(ee.Filter.calendarRange(12, 4, 'month')).median();
-  var dry = s1.filter(ee.Filter.calendarRange(5, 11, 'month')).median();
-  //Rename base bands
-  var vv_wet = wet.select('VV').rename('VV_wet');
-  var vh_wet = wet.select('VH').rename('VH_wet');
-
-  var vv_dry = dry.select('VV').rename('VV_dry');
-  var vh_dry = dry.select('VH').rename('VH_dry');
-  return ee.Image.cat([vh_dry, vh_wet, vv_dry, vv_wet]);
-} 
-
-// Annual PALSAR-2 ScanSAR (stored DN converted to gamma nought in dB).
-// Keep only acquisitions containing both HH and HV; the collection also
-// includes single-polarization scenes.
-function getScanSARFeatures(year, roi) {
-  var startDate = ee.Date.fromYMD(year, 1, 1);
-  var endDate = startDate.advance(1, 'year');
-  var collection = ee.ImageCollection('JAXA/ALOS/PALSAR-2/Level2_2/ScanSAR')
-    .filterBounds(roi)
-    .filterDate(startDate, endDate)
-    .filter(ee.Filter.listContains('Polarizations', 'HH'))
-    .filter(ee.Filter.listContains('Polarizations', 'HV'));
-
-  print(year + ' dual-polarization ScanSAR image count:', collection.size());
-  var dnMedian = collection.select(['HH', 'HV']).median();
-  return dnMedian
-    .updateMask(dnMedian.gt(0))
-    .pow(2)
-    .log10()
-    .multiply(10)
-    .subtract(83)
-    .rename(['ScanSAR_HH_dB', 'ScanSAR_HV_dB'])
-    .clip(roi);
-}
-
-var scansarFeatures2025 = getScanSARFeatures(2025, aoi);
-var scansarFeatures2020 = getScanSARFeatures(2020, aoi);
+// Annual PALSAR-2 ScanSAR & Seasonal S1 — sourced from feats module
+var scansarFeatures2025 = feats.getScanSARFeatures(2025, aoi);
+var scansarFeatures2020 = feats.getScanSARFeatures(2020, aoi);
 
 // Sentinel-1 seasonal radar backscatter features
-var s1_seasonal_2020 = getSeasonalS1(2020, aoi).clip(aoi);
-var s1_seasonal_2025 = getSeasonalS1(2025, aoi).clip(aoi);
-// Build feature stacks for each epoch from the unified Landsat CCDC mosaic
+var s1_seasonal_2020 = feats.getSeasonalS1(2020, aoi);
+var s1_seasonal_2025 = feats.getSeasonalS1(2025, aoi);
+
+// Build feature stacks for each epoch from the unified S2 CCDC mosaic
 var spectral_features_2025 = buildYearFeatures(ccdc_mosaic, 2025);
 var spectral_features_2020 = buildYearFeatures(ccdc_mosaic, 2020);
 
-//Topography
-var elev = ee.Image("NASA/NASADEM_HGT/001")
-            .select('elevation')
-            .clip(aoi)
-var terrain_product = ee.Terrain.products(elev).select('slope', 'aspect').toFloat();
-//Landform 
-var landform = ee.Image('projects/ee-rg2v2/assets/TPI_landform_TL')
-                      .rename('landform')
-                      .toByte()
-                      .clip(aoi)
-//Topographic Wetness Index
-var twi = ee.Image('projects/ee-rg2/assets/Top_Wetness_index')
-                  .rename('TWI')
-                  .toFloat()
-
-//Stack topographical data
-var topo = elev.int16().addBands(terrain_product).addBands(landform).addBands(twi)//(2. Topographical Data Features)
+// Topography — sourced from feats module
+var landform = ee.Image('projects/ee-rg2v2/assets/TPI_landform_TL');
+var twi = ee.Image('projects/ee-rg2/assets/Top_Wetness_index');
+var topo = feats.getTopography(aoi, {
+  landformImg: landform,
+  twiImg:      twi
+});
 
 //Stack all features for each year
 var final_stack_2025 = ee.Image.cat([
@@ -421,14 +280,11 @@ if (APPLY_BAYESIAN_SMOOTHING) {
   {year: 2025, image: finalProbs_2025},
   {year: 2020, image: finalProbs_2020}
 ].forEach(function(result) {
-  Export.image.toAsset({
-    image: result.image.clip(aoi),
-    description: 'TL_S2_class_probabilities_' + result.year,
-    assetId: 'projects/ee-rg2/assets/TL_S2_class_probabilities_' + result.year,
-    region: aoi,
-    scale: 20,
-    crs: 'EPSG:32751',
-    maxPixels: 1e13,
-    pyramidingPolicy: {'.default': 'mean'}
-  });
+  cfg.toAsset(result.image.clip(aoi),
+    'projects/ee-rg2/assets/TL_S2_class_probabilities_' + result.year, {
+      description:      'TL_S2_class_probabilities_' + result.year,
+      region:           aoi,
+      scale:            cfg.SCALE.S2,
+      pyramidingPolicy: {'.default': 'mean'}
+    });
 });
