@@ -1,11 +1,12 @@
 //define AOI
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry();
+var cfg = require('users/rg2icraf/Luma:config');
+var aoi = ee.FeatureCollection(cfg.AOI_ASSET).geometry();
 
 //define module
 var extraction = require("users/rg2icraf/Luma:extract_split_data");
-var clf = require("users/rg2icraf/Luma:classify_model")
-var tuning = require("users/rg2icraf/Luma:tune_model")
-var post = require("users/rg2icraf/Luma:post_process")
+var clf = require("users/rg2icraf/Luma:classify_model");
+var tuning = require("users/rg2icraf/Luma:tune_model");
+var post = require("users/rg2icraf/Luma:post_process");
 
 //Predefine asset relevant for spectral data
 var index_dry = ee.Image('projects/gee-v1-510606/assets/Landsat_TL_Dry_IndexFeature_2025')
@@ -64,28 +65,8 @@ variablesPerSplit: 19
 */
 
 //perform multiprobability classification
-//class name
-
-var classIdToName = {
-  1: 'Primary_forest',
-  2: 'Secondary_forest',
-  3: 'Mangrove_forest',
-  4: 'Coastal_forest',
-  5: 'Teak_plantation',
-  6: 'Eucalyptus_plantation',
-  7: 'Coffe_agroforestry',
-  8: 'Cocoa_agroforestry',
-  9: 'Coconut_agroforestry',
-  10: 'Mixed_garden',
-  11: 'Paddy_field',
-  12: 'Other_cropland',
-  13: 'Grassland',
-  14: 'Shrubland',
-  15: 'Cleared_land',
-  16: 'Built-up',
-  17: 'Waterbody',
-  18: 'Dry_riverbed'
-};
+//class name — sourced from cfg
+var classIdToName = cfg.CLASS_SCHEMA;
 
 //perform classification on 2025 data
 var rf_model_2025 = clf.multiProbabilityClassification(
@@ -150,28 +131,8 @@ var probs_2015 = feature_2015.classify(trainedModel2025);
 var probs_2005 = feature_2005.classify(trainedModel2025)
 
 // Parse class IDs in ascending numerical order to maintain band order alignment
-var sortedIds = Object.keys(classIdToName).map(Number).sort(function(a, b) { return a - b; });
-var classBands = sortedIds.map(function(id) { return classIdToName[id]; });
-var smoothnessTL = {
-  'Primary_forest': 4.5,
-  'Secondary_forest': 3.0,
-  'Mangrove_forest': 3.0,
-  'Coastal_forest': 3.5,
-  'Teak_plantation': 1.2,
-  'Eucalyptus_plantation': 1.2,
-  'Coffe_agroforestry': 1.5,
-  'Cocoa_agroforestry': 1.5,
-  'Coconut_agroforestry': 1.5,
-  'Mixed_garden': 1.2,
-  'Paddy_field': 1.0,
-  'Other_cropland': 1.0,
-  'Grassland': 1.5,
-  'Shrubland': 1.5,
-  'Cleared_land': 0.5,
-  'Built-up': 0.2,
-  'Waterbody': 4.0,
-  'Dry_riverbed': 0.1
-}
+var classBands   = cfg.CLASS_BANDS;
+var smoothnessTL = cfg.SMOOTHNESS;
 
 //Flatten array image into separate class probability bands for all year
 var smoothedProbs_2025 = post.bayesianSmooth(probsImage, classBands,
@@ -195,40 +156,21 @@ var smoothedProbs_2005 = post.bayesianSmooth(probsImage_2005, classBands,
 );
 //print('Smoother Probability 2005', smoothedProbs_2005 )
 
-
-
 // EXPORT SMOOTHED PROBABILITIES TO ASSETS
 //.multiply(10000).round().toUint16() dont forget to rescale the prob
-
-Export.image.toAsset({
-  image: smoothedProbs_2025.multiply(10000).round().toUint16(),
-  description: 'smoothed_probabilities_2025_TL',
-  assetId: 'projects/ee-rg2/assets/LC_prob_2025_Landsat_TL',
-  region: aoi,
-  scale: 30,
-  crs: 'EPSG:32751',
-  maxPixels: 1e13,
-  pyramidingPolicy: {'.default': 'mean'}
-});
-
-Export.image.toAsset({
-  image: smoothedProbs_2015.multiply(10000).round().toUint16(),
-  description: 'smoothed_probabilities_2015_TL',
-  assetId: 'projects/ee-rg2/assets/LC_prob_2015_Landsat_TL',
-  region: aoi,
-  scale: 30,
-  crs: 'EPSG:32751',
-  maxPixels: 1e13,
-  pyramidingPolicy: {'.default': 'mean'}
-});
-
-Export.image.toAsset({
-  image: smoothedProbs_2005.multiply(10000).round().toUint16(),
-  description: 'smoothed_probabilities_2005_TL',
-  assetId: 'projects/ee-rg2/assets/LC_prob_2005_Landsat_TL',
-  region: aoi,
-  scale: 30,
-  crs: 'EPSG:32751',
-  maxPixels: 1e13,
-  pyramidingPolicy: {'.default': 'mean'}
+[
+  { year: 2025, img: smoothedProbs_2025 },
+  { year: 2015, img: smoothedProbs_2015 },
+  { year: 2005, img: smoothedProbs_2005 }
+].forEach(function(item) {
+  cfg.toAsset(
+    item.img.multiply(10000).round().toUint16(),
+    'projects/ee-rg2/assets/LC_prob_' + item.year + '_Landsat_TL',
+    {
+      description: 'smoothed_probabilities_' + item.year + '_TL',
+      region: aoi,
+      scale: cfg.SCALE.Landsat,
+      pyramidingPolicy: {'.default': 'mean'}
+    }
+  );
 });

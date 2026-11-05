@@ -1,8 +1,10 @@
 //define the AOI
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry()
+var cfg = require('users/rg2icraf/Luma:config');
+var aoi = ee.FeatureCollection(cfg.AOI_ASSET).geometry();
 
 //import the required modules
 var ccdc = require("users/rg2icraf/Luma:ccdc_sentinel2");
+var feats = require("users/rg2icraf/Luma:features");
 var extraction = require("users/rg2icraf/Luma:extract_split_data");
 var clf = require("users/rg2icraf/Luma:classify_model")
 var tuning = require("users/rg2icraf/Luma:tune_model")
@@ -49,33 +51,10 @@ var index_features_2020 = ee.Image.cat([temporal_index_2020, annual_index_2020, 
 
 //radar backscatter
 //2025
-var s1_seasonal_2025 = ee.Image('projects/ee-v2-508913/assets/s1_seasonal_tl_25')
+var s1_seasonal_2025 = ee.Image('projects/ee-v2-508913/assets/s1_seasonal_tl_25');
 
-//2020
-//not in asset, rebuild it
-function getSeasonalS1(year, roi) {
-  var startDate = ee.Date.fromYMD(year, 1, 1);
-  var endDate   = ee.Date.fromYMD(year, 12, 31);
-  var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
-    .filterBounds(roi)
-    .filterDate(startDate, endDate)
-    .filter(ee.Filter.eq('instrumentMode', 'IW'))
-    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
-    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
-    .select(['VV', 'VH']);
-  //Monsoonal Splitting
-  var wet = s1.filter(ee.Filter.calendarRange(12, 4, 'month')).median();
-  var dry = s1.filter(ee.Filter.calendarRange(5, 11, 'month')).median();
-  //Rename base bands
-  var vv_wet = wet.select('VV').rename('VV_wet');
-  var vh_wet = wet.select('VH').rename('VH_wet');
-  
-  var vv_dry = dry.select('VV').rename('VV_dry');
-  var vh_dry = dry.select('VH').rename('VH_dry');
-  return ee.Image.cat([vh_dry, vh_wet, vv_dry, vv_wet]);
-}
-
-var s1_seasonal_2020 = getSeasonalS1(2020, aoi).clip(aoi);
+//2020 — sourced from feats
+var s1_seasonal_2020 = feats.getSeasonalS1(2020, aoi);
 
 var final_stack_2020 = ee.Image.cat([
                       optical_2020,         //CCDC optical band
@@ -156,27 +135,8 @@ print('Best parameters:', bestParams);
 */
 
 //perform multiprobability classification
-//class name
-var classIdToName = {
-  1: 'Primary_forest',
-  2: 'Secondary_forest',
-  3: 'Mangrove_forest',
-  4: 'Coastal_forest',
-  5: 'Teak_plantation',
-  6: 'Eucalyptus_plantation',
-  7: 'Coffe_agroforestry',
-  8: 'Cocoa_agroforestry',
-  9: 'Coconut_agroforestry',
-  10: 'Mixed_garden',
-  11: 'Paddy_field',
-  12: 'Other_cropland',
-  13: 'Grassland',
-  14: 'Shrubland',
-  15: 'Cleared_land',
-  16: 'Built-up',
-  17: 'Waterbody',
-  18: 'Dry_riverbed'
-};
+//class name — sourced from cfg
+var classIdToName = cfg.CLASS_SCHEMA;
 //perform classification on 2025 data
 var rf_model_2025 = clf.multiProbabilityClassification(
   train_pix_2025,
@@ -210,26 +170,7 @@ print('Share of test-area pixels where label differs',
   diff.reduceRegion({reducer: ee.Reducer.mean(), geometry: testArea, scale: 10, maxPixels: 1e9}));
 */
 //print('Prob band names', probsImage.bandNames());
-var smoothnessTL = {
-  'Primary_forest': 4.5,
-  'Secondary_forest': 3.0,
-  'Mangrove_forest': 3.0,
-  'Coastal_forest': 3.5,
-  'Teak_plantation': 1.2,
-  'Eucalyptus_plantation': 1.2,
-  'Coffe_agroforestry': 1.5,
-  'Cocoa_agroforestry': 1.5,
-  'Coconut_agroforestry': 1.5,
-  'Mixed_garden': 1.2,
-  'Paddy_field': 1.0,
-  'Other_cropland': 1.0,
-  'Grassland': 1.5,
-  'Shrubland': 1.5,
-  'Cleared_land': 0.5,
-  'Built-up': 0.2,
-  'Waterbody': 4.0,
-  'Dry_riverbed': 0.1
-}
+var smoothnessTL = cfg.SMOOTHNESS;
 
 //Testing
 var testArea = ee.Geometry.BBox(125.38, -8.76, 125.41, -8.73);
@@ -253,8 +194,7 @@ Map.addLayer(testLabel, {min: 1, max: 18}, 'Smoothed Test Area');
 var trainedModel2025 = rf_model_2025.trainedModel;
 var probs_2020 = final_stack_2020.classify(trainedModel2025);
 // Parse class IDs in ascending numerical order to maintain band order alignment
-var sortedIds = Object.keys(classIdToName).map(Number).sort(function(a, b) { return a - b; });
-var classBands = sortedIds.map(function(id) { return classIdToName[id]; });
+var classBands = cfg.CLASS_BANDS;
 // Flatten array image into separate class probability bands for 2020
 var probsImage_2020 = probs_2020.rename('probs').arrayFlatten([classBands]);
 var smoothedProbs = post.bayesianSmooth(
@@ -264,3 +204,28 @@ var smoothedProbs = post.bayesianSmooth(
   5,    //Window size (5x5)
   0.5   //Neighbor fraction
 );
+
+var smoothedProbs_2020 = post.bayesianSmooth(
+  probsImage_2020,
+  classBands,
+  smoothnessTL,
+  5,
+  0.5
+);
+
+// Export probabilities using cfg.toAsset
+[
+  { year: 2025, img: smoothedProbs },
+  { year: 2020, img: smoothedProbs_2020 }
+].forEach(function(item) {
+  cfg.toAsset(
+    item.img.multiply(10000).round().toUint16(),
+    'projects/ee-rg2/assets/TL_S2_class_probabilities_' + item.year,
+    {
+      description: 'TL_S2_class_probabilities_' + item.year,
+      region: aoi,
+      scale: cfg.SCALE.S2,
+      pyramidingPolicy: {'.default': 'mean'}
+    }
+  );
+});
