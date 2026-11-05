@@ -20,6 +20,7 @@ function buildRfParams(nTrees, vSplit, minLeaf, seed) {
   }
   return params;
 }
+exports.buildRfParams = buildRfParams;
 
 /**
  * 1. Hard Classification
