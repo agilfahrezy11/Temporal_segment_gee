@@ -1,26 +1,27 @@
 /**
- * Module: Sentinel-2 CCDC Temporal Segmentation & Synthetic Stack Generator
- * Description: Prepares Sentinel-2 Surface Reflectance time series using Cloud Score+,
- *              executes CCDC temporal segmentation, and provides synthetic predictor
- *              stacks and harmonic metrics for classification with gap tolerance.
+ * Module: Sentinel-2 CCDC Pipeline (Compatibility Facade)
+ * =========================================================================
+ * Provides backward compatibility for all existing scripts requiring:
+ *   require('users/rg2icraf/Luma:ccdc_sentinel2')
+ *
+ * Internally delegates to the stage-based architecture:
+ *   - src/inputs/s2.js
+ *   - src/inputs/composite.js
+ *   - src/ccdc/core.js
+ * =========================================================================
  */
 
-/**
- * 1. Cloud Masking & Scaling Helper (Cloud Score+)
- * Applies Cloud Score+ (cs_cdf or cs) quality threshold and converts SR values
- * from stored integers to 0..1 reflectance by dividing by 10,000.
- *
- * @param {ee.Image} image - Sentinel-2 image with linked Cloud Score+ band.
- * @param {number} [clearThreshold=0.60] - Minimum quality score to keep (0.50 - 0.65).
- * @param {string} [qaBand='cs_cdf'] - Quality band ('cs_cdf' or 'cs').
- * @returns {ee.Image} Cloud-masked and scaled image.
- */
+var inputsS2  = require('users/rg2icraf/Luma:inputs/s2');
+var composite = require('users/rg2icraf/Luma:inputs/composite');
+var core      = require('users/rg2icraf/Luma:ccdc/core');
+
+// 1. Cloud Masking & Scaling
 exports.maskAndScaleS2 = function(image, clearThreshold, qaBand) {
   clearThreshold = clearThreshold !== undefined ? clearThreshold : 0.60;
   qaBand = qaBand || 'cs_cdf';
 
   var cloudMask = image.select(qaBand).gte(clearThreshold);
-  var inputBands = ['B2', 'B3', 'B4', 'B8', 'B11', 'B12'];
+  var inputBands  = ['B2', 'B3', 'B4', 'B8', 'B11', 'B12'];
   var outputBands = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'];
 
   return image.select(inputBands, outputBands)
@@ -28,260 +29,108 @@ exports.maskAndScaleS2 = function(image, clearThreshold, qaBand) {
     .updateMask(cloudMask);
 };
 
-/**
- * 2. Prepare S2 Time Series Collection for CCDC (using Cloud Score+)
- * Links Sentinel-2 L2A with Cloud Score+, masks low-quality pixels, and renames
- * bands. Source timestamps are preserved for CCDC's fractional-year date format.
- *
- * @param {ee.Geometry} roi - Region of interest boundary.
- * @param {string} [startDate='2018-12-01'] - Start date for time series.
- * @param {string} [endDate='2025-12-31'] - End date for time series.
- * @param {number} [clearThreshold=0.60] - Cloud Score+ quality threshold.
- * @param {string} [qaBand='cs_cdf'] - Quality band to evaluate.
- * @returns {ee.ImageCollection} Processed collection ready for CCDC, with bands
- *          renamed to lowercase and source reflectance values retained.
- */
+// 2. Data Ingestion Collection
 exports.getS2TimeSeries = function(roi, startDate, endDate, clearThreshold, qaBand) {
-  startDate = startDate || '2018-12-01'; //example date
-  endDate = endDate || '2025-12-31'; //example date
-  clearThreshold = clearThreshold !== undefined ? clearThreshold : 0.60;
-  qaBand = qaBand || 'cs_cdf';
-
-  var inputBands = ['B2', 'B3', 'B4', 'B8', 'B11', 'B12'];
-  var outputNames = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'];
-
-  var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-    .filterBounds(roi)
-    .filterDate(startDate, endDate);
-
-  var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED')
-    .filterBounds(roi)
-    .filterDate(startDate, endDate);
-
-  var s2Linked = s2.linkCollection(csPlus, [qaBand]);
-
-  return s2Linked.map(function(img) {
-    var cloudMask = img.select(qaBand).gte(clearThreshold);
-    var masked = img.select(inputBands, outputNames).updateMask(cloudMask);
-    return masked.copyProperties(img, ['system:time_start']);
+  return inputsS2.getCollection(roi, startDate, endDate, {
+    clearThreshold:   clearThreshold,
+    qaBand:           qaBand,
+    reflectanceScale: 10000 // Native 0..10000 integer scale for CCDC
   });
 };
 
+// 3. Monthly Compositing
+exports.toMonthlyMedian = function(col, startDate, endDate) {
+  return composite.toMonthlyMedian(col, startDate, endDate);
+};
 
-/**
- * 3. Run CCDC Algorithm
- * Wraps ee.Algorithms.TemporalSegmentation.Ccdc with sensible defaults.
- *
- * @param {ee.ImageCollection} s2Collection - Processed S2 time series from getS2TimeSeries.
- * @param {Object} [options] - CCDC hyperparameter overrides.
- * @returns {ee.Image} CCDC array output image containing coefficients and break metadata.
- */
+// 4. Execution
 exports.runCCDC = function(s2Collection, options) {
   options = options || {};
-
-  var params = {
-    collection: s2Collection,
-    breakpointBands: options.breakpointBands || ['green', 'red', 'nir', 'swir1'],
-    dateFormat: options.dateFormat !== undefined ? options.dateFormat : 1, // Fractional years
-    minObservations: options.minObservations || 6,
-    chiSquareProbability: options.chiSquareProbability || 0.99,
-    minNumOfYearsScaler: options.minNumOfYearsScaler || 1.33,
-    lambda: options.lambda || 20,
-    maxIterations: options.maxIterations || 25000
-  };
-
-  return ee.Algorithms.TemporalSegmentation.Ccdc(params);
+  options.breakpointBands = options.breakpointBands || ['green', 'red', 'nir', 'swir1'];
+  return core.runCCDC(s2Collection, options);
 };
 
-/**
- * 4. Nearest segment in time per pixel (index, temporal gap in years, tStart, tEnd).
- * Returns gap = 0 if targetDateFractional t is strictly inside an active segment.
- *
- * @param {ee.Image} ccdc - CCDC array image containing tStart and tEnd.
- * @param {number|ee.Number} t - Target fractional year (e.g., 2025.65).
- * @returns {Object} {idx, gap, tS, tE}
- */
+// 5. Nearest Segment
 exports.nearestSegment = function(ccdc, t) {
-  t = ee.Number(t);
-  var tS = ccdc.select('tStart');
-  var tE = ccdc.select('tEnd');
-  var dist = tS.subtract(t).max(tE.multiply(-1).add(t)).max(0); // 0 if inside a segment
-  return {
-    idx: dist.multiply(-1).arrayArgmax().arrayGet([0]),
-    gap: dist.arrayReduce(ee.Reducer.min(), [0]).arrayGet([0]).rename('gap_years'),
-    tS: tS,
-    tE: tE
-  };
+  return core.nearestSegment(ccdc, t);
 };
 
-/**
- * 5. Fill isolated nodata holes from 3x3 focal median, only where enough neighbors are valid.
- *
- * @param {ee.Image} img - Image with potential isolated nodata holes.
- * @param {number} [minNeighbors=5] - Minimum valid neighbors in 3x3 window (out of 8).
- * @returns {ee.Image} Gap-filled image.
- */
+// 6. Hole Filling
 exports.fillIsolated = function(img, minNeighbors) {
-  minNeighbors = minNeighbors !== undefined ? minNeighbors : 5;
-  var n = img.select(0).mask().reduceNeighborhood({
-    reducer: ee.Reducer.sum(),
-    kernel: ee.Kernel.square(1)
-  });
-  var med = img.focalMedian(1, 'square', 'pixels');
-  return img.unmask(med.updateMask(n.gte(minNeighbors)));
+  return core.fillIsolated(img, minNeighbors);
 };
 
-/**
- * 6. Generate Synthetic Predictor Stack for a Single Date with Gap Tolerance
- * Evaluates CCDC harmonic regression coefficients at target fractional year t.
- * Uses the nearest segment in time with a configurable gap tolerance (tolYears).
- * Clamps the linear trend term to the segment bounds while preserving seasonal harmonics.
- *
- * @param {ee.Image} ccdcOutput - Output image from runCCDC.
- * @param {number|ee.Number} targetDateFractional - Date in fractional year (e.g., 2025.65).
- * @param {Array<string>|boolean} [bands] - Spectral band names, OR boolean addIndices (Landsat style).
- * @param {boolean|number} [addIndices=true] - Whether to compute indices, OR tolYears (Landsat style).
- * @param {number} [coefficientScale=10000] - Scale of CCDC coefficients (default 10000).
- * @param {number} [tolYears=1.0] - Maximum gap in years to the nearest segment (default 1.0).
- * @returns {ee.Image} Synthetic surface reflectance stack with indices.
- */
+// 7. Synthetic Stack
 exports.getSyntheticStack = function(ccdcOutput, targetDateFractional, bands, addIndices, coefficientScale, tolYears) {
   // Support flexible argument order (both S2 style and Landsat style)
+  var _bands, _addIndices, _coefScale, _tolYears;
   if (typeof bands === 'boolean') {
-    var _addIndices = bands;
-    var _tolYears = addIndices !== undefined ? addIndices : 1.0;
-    var _coefScale = coefficientScale !== undefined ? coefficientScale : 10000;
-    tolYears = _tolYears;
-    coefficientScale = _coefScale;
-    addIndices = _addIndices;
-    bands = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'];
+    _addIndices = bands;
+    _tolYears   = addIndices !== undefined ? addIndices : 1.0;
+    _coefScale  = coefficientScale !== undefined ? coefficientScale : 10000;
+    _bands      = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'];
   } else {
-    bands = bands || ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'];
-    addIndices = addIndices !== undefined ? addIndices : true;
-    coefficientScale = coefficientScale !== undefined ? coefficientScale : 10000;
-    tolYears = tolYears !== undefined ? tolYears : 1.0;
+    _bands      = bands || ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'];
+    _addIndices = addIndices !== undefined ? addIndices : true;
+    _coefScale  = coefficientScale !== undefined ? coefficientScale : 10000;
+    _tolYears   = tolYears !== undefined ? tolYears : 1.0;
   }
 
-  var t = ee.Number(targetDateFractional);
-  var seg = exports.nearestSegment(ccdcOutput, t);
-
-  // Clamp only the trend term; harmonics keep the target date's season
-  var tc = ee.Image(t).max(seg.tS.arrayGet(seg.idx)).min(seg.tE.arrayGet(seg.idx));
-  var omega = 2.0 * Math.PI;
-  var terms = ee.Image.cat([
-    ee.Image.constant(1),
-    tc,
-    ee.Image.constant(t.multiply(omega).cos()),
-    ee.Image.constant(t.multiply(omega).sin()),
-    ee.Image.constant(t.multiply(omega * 2).cos()),
-    ee.Image.constant(t.multiply(omega * 2).sin()),
-    ee.Image.constant(t.multiply(omega * 3).cos()),
-    ee.Image.constant(t.multiply(omega * 3).sin())
-  ]).toArray();
-
-  var syntheticBands = bands.map(function(band) {
-    var coefs = ccdcOutput.select(band + '_coefs')
-      .arraySlice(0, seg.idx, seg.idx.add(1))
-      .arrayProject([1]);
-    
-    return coefs.multiply(terms).arrayReduce(ee.Reducer.sum(), [0])
-      .arrayGet([0]).divide(coefficientScale).rename(band);
+  var stack = core.getSyntheticStack(ccdcOutput, targetDateFractional, {
+    bands:          _bands,
+    coefScale:      _coefScale,
+    tolYears:       _tolYears,
+    coefCase:       'lower', // Sentinel-2 assets use lowercase (blue_coefs)
+    minReflectance: -0.05,
+    maxReflectance: 1.0,     // Unified 1.0 ceiling
+    fillHoles:      true
   });
 
-  var stack = ee.Image.cat(syntheticBands);
+  var opticalBands = stack.select(_bands);
 
-  // Plausibility bounds: lenient bounds, within tolerance
-  var valid = seg.gap.lte(tolYears)
-    .and(stack.reduce(ee.Reducer.min()).gt(-0.05))
-    .and(stack.reduce(ee.Reducer.max()).lt(1.5));
-  stack = exports.fillIsolated(stack.updateMask(valid), 5);
-
-  if (addIndices) {
-    var ndvi = stack.normalizedDifference(['nir', 'red']).rename('NDVI');
-    var ndwi = stack.normalizedDifference(['green', 'nir']).rename('NDWI');
-    var ndbi = stack.normalizedDifference(['swir1', 'nir']).rename('NDBI');
-    stack = stack.addBands([ndvi, ndwi, ndbi]);
+  if (_addIndices) {
+    var ndvi = opticalBands.normalizedDifference(['nir', 'red']).rename('NDVI');
+    var ndwi = opticalBands.normalizedDifference(['green', 'nir']).rename('NDWI');
+    var ndbi = opticalBands.normalizedDifference(['swir1', 'nir']).rename('NDBI');
+    opticalBands = opticalBands.addBands([ndvi, ndwi, ndbi]);
   }
 
-  return stack;
+  return opticalBands;
 };
 
-/**
- * 7. First-harmonic amplitude and phase for the nearest segment within tolerance.
- *
- * @param {ee.Image} ccdcOutput - Output image from runCCDC.
- * @param {number|ee.Number} targetDateFractional - Date in fractional years.
- * @param {Array<string>} [bands] - CCDC band names, e.g. ['nir', 'red', 'swir1'].
- * @param {number} [coefficientScale=10000] - CCDC coefficient scale.
- * @param {number} [tolYears=1.0] - Maximum gap in years to nearest valid segment.
- * @returns {ee.Image} Amplitude and phase bands for each requested input band.
- */
+// 8. Harmonics
 exports.getHarmonics = function(ccdcOutput, targetDateFractional, bands, coefficientScale, tolYears) {
-  bands = bands || ['nir', 'red', 'swir1'];
-  coefficientScale = coefficientScale !== undefined ? coefficientScale : 10000;
-  tolYears = tolYears !== undefined ? tolYears : 1.0;
+  // Support swapped argument order defensively
+  var _bands     = bands || ['nir', 'red', 'swir1'];
+  var _coefScale = 10000;
+  var _tolYears  = 1.0;
 
-  var t = ee.Number(targetDateFractional);
-  var seg = exports.nearestSegment(ccdcOutput, t);
+  if (typeof coefficientScale === 'number' && coefficientScale <= 10.0) {
+    // Caller passed tolYears in position 4
+    _tolYears  = coefficientScale;
+    _coefScale = tolYears !== undefined ? tolYears : 10000;
+  } else {
+    _coefScale = coefficientScale !== undefined ? coefficientScale : 10000;
+    _tolYears  = tolYears !== undefined ? tolYears : 1.0;
+  }
 
-  var harmonicImages = bands.map(function(band) {
-    var coefficients = ccdcOutput.select(band + '_coefs')
-      .arraySlice(0, seg.idx, seg.idx.add(1))
-      .arrayProject([1]);
-    var a1 = coefficients.arrayGet([2]).divide(coefficientScale);
-    var b1 = coefficients.arrayGet([3]).divide(coefficientScale);
-
-    return ee.Image.cat([
-      a1.hypot(b1).rename(band + '_amp'),
-      b1.atan2(a1).rename(band + '_phase')
-    ]);
+  return core.getHarmonics(ccdcOutput, targetDateFractional, {
+    bands:      _bands,
+    coefScale:  _coefScale,
+    tolYears:   _tolYears,
+    coefCase:   'lower', // Sentinel-2 assets use lowercase
+    outputCase: 'lower'  // S2 pipelines expect 'nir_amp', 'red_amp'
   });
-
-  return ee.Image.cat(harmonicImages).updateMask(seg.gap.lte(tolYears));
 };
 
-/**
- * 8. Multi-Year Synthetic Stack Generator
- * Generates a dictionary of synthetic stacks for multiple target years.
- *
- * @param {ee.Image} ccdcOutput - Output image from runCCDC.
- * @param {Array<number>} yearsList - List of target years (e.g., [2015, 2020, 2025]).
- * @param {number} [fractionOfYear=0.5] - Day of year fraction (e.g., 0.5 = ~July 1 dry season).
- * @param {Array<string>} [bands] - Spectral band list.
- * @param {boolean} [addIndices=true] - Whether to compute indices.
- * @param {number} [coefficientScale=10000] - CCDC coefficient scale.
- * @param {number} [tolYears=1.0] - Maximum gap in years to nearest valid segment.
- * @returns {Object} Map with year keys pointing to ee.Image synthetic stacks.
- */
+// 9. Multi-Year Synthetic Stacks
 exports.getMultiYearSyntheticStacks = function(ccdcOutput, yearsList, fractionOfYear, bands, addIndices, coefficientScale, tolYears) {
   fractionOfYear = fractionOfYear !== undefined ? fractionOfYear : 0.5;
-  tolYears = tolYears !== undefined ? tolYears : 1.0;
-  
-  var stacks = {};
-  yearsList.forEach(function(year) {
-    var targetT = ee.Number(year).add(fractionOfYear);
-    stacks[year] = exports.getSyntheticStack(
-      ccdcOutput, targetT, bands, addIndices, coefficientScale, tolYears
-    );
+  bands = bands || ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'];
+  var result = {};
+  yearsList.forEach(function(yr) {
+    var dateFrac = yr + fractionOfYear;
+    result[yr] = exports.getSyntheticStack(ccdcOutput, dateFrac, bands, addIndices, coefficientScale, tolYears);
   });
-
-  return stacks;
-};
-
-/**
- * 9. Monthly median composites from a masked S2 collection.
- * Months with no valid observations are dropped.
- * Timestamp is set to mid-month so CCDC sees one observation per month.
- */
-exports.toMonthlyMedian = function(col, startDate, endDate) {
-  var start = ee.Date(startDate);
-  var nMonths = ee.Date(endDate).difference(start, 'month').floor();
-  var comps = ee.List.sequence(0, nMonths.subtract(1)).map(function(m) {
-    var d0 = start.advance(m, 'month');
-    var sub = col.filterDate(d0, d0.advance(1, 'month'));
-    return sub.median()
-      .set('system:time_start', d0.advance(15, 'day').millis())
-      .set('n', sub.size());
-  });
-  return ee.ImageCollection.fromImages(comps).filter(ee.Filter.gt('n', 0));
+  return result;
 };

@@ -1,69 +1,54 @@
-//define the AOI
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry()
-Map.addLayer(aoi)
-//////TESTING CCDC WORKFLOW////
+// ---------------------------------------------------------------------------
+// 1. Setup & Configuration
+// ---------------------------------------------------------------------------
+var cfg = require('users/rg2icraf/Luma:config');
+var ccdc = require('users/rg2icraf/Luma:ccdc_sentinel2');
 
-//import the ccdc modules
-var ccdc = require("users/rg2icraf/Luma:ccdc_sentinel2");
-/*
-//test point near DIli
-var testPoint = ee.Geometry.Point([125.5736, -8.5568]); 
+// Area of Interest (AOI)
+var aoi = cfg.getAOI();
+Map.centerObject(aoi, 9);
+Map.addLayer(aoi, {color: 'FF0000'}, 'AOI Boundary', false);
 
-// Run CCDC on a small test geometry for fast feedback
-var testRoi = testPoint.buffer(5000); 
-var s2TS = ccdc.getS2TimeSeries(testRoi, '2018-12-01', '2025-12-31', 0.60, 'cs_cdf');
-var ccdcTest = ccdc.runCCDC(s2TS);
+// ---------------------------------------------------------------------------
+// 2. Prep Sentinel-2 Harmonized Time Series & Monthly Medians
+// ---------------------------------------------------------------------------
+var raw_ts = ccdc.getS2TimeSeries(aoi, '2019-01-01', '2026-01-01', 0.50, 'cs_cdf');
+var median_ts = ccdc.toMonthlyMedian(raw_ts, '2019-01-01', '2026-01-01');
 
-// Generate synthetic stacks for 2019 and 2024 (Fraction 0.5 = July)
-var synth2019 = ccdc.getSyntheticStack(ccdcTest, 2019.5);
-var synth2024 = ccdc.getSyntheticStack(ccdcTest, 2024.5);
-
-// Extract original surface reflectance and predicted NIR trajectory
-var nirObs = s2TS.select('nir').map(function(img) {
-  return img.select('nir').divide(10000)
-    .copyProperties(img, ['system:time_start']);
-});
-
-// Plot time-series trajectory at test point
-var chart = ui.Chart.image.series(nirObs, testPoint, ee.Reducer.mean(), 10)
-  .setOptions({
-    title: 'S2 NIR Raw Observations over Time',
-    hAxis: {title: 'Date'},
-    vAxis: {title: 'Surface Reflectance'},
-    lineWidth: 1,
-    pointSize: 3
-  });
-print(chart);
-
-// Add to Map in True-Color (RGB)
-var rgbVis = {bands: ['red', 'green', 'blue'], min: 0.02, max: 0.20};
-Map.centerObject(testPoint, 13);
-Map.addLayer(synth2019, rgbVis, 'Synthetic RGB 2019.5');
-Map.addLayer(synth2024, rgbVis, 'Synthetic RGB 2024.5');
-*/
-
-//////RUN CCDC WORKFLOW////
-
-//Prep collection
-var raw_ts = ccdc.getS2TimeSeries(aoi, '2019-01-01', '2026-1-1', 0.50, 'cs_cdf');
-var median_ts = ccdc.toMonthlyMedian(raw_ts, '2019-01-01', '2026-1-1');
-
-//run CCDC algorithm
+// ---------------------------------------------------------------------------
+// 3. Run CCDC Algorithm
+// ---------------------------------------------------------------------------
 var ccdcResults = ccdc.runCCDC(median_ts, {
   breakpointBands: ['green', 'nir', 'swir1']
 });
-// drop what you don't need 
-var selected_ccdc = ccdcResults.select(['tStart','tEnd','tBreak','changeProb','.*_coefs']);
 
-// 3. Export each of your 3 custom bounding regions 
-Export.image.toAsset({
-  image: selected_ccdc,
-  description: 'CCDC_TL_2020_2025_20m_westbox',
-  assetId: 'projects/ee-rg2v2/assets/CCDC_TL_2020_2025_20m_westbox',
-  region: west_box,
-  scale: 20,
-  crs: 'EPSG:32751',
-  maxPixels: 1e13,
+// Retain essential segment temporal boundaries and harmonic coefficients
+var selected_ccdc = ccdcResults.select(['tStart', 'tEnd', 'tBreak', 'changeProb', '.*_coefs']);
+
+// ---------------------------------------------------------------------------
+// 4. Export CCDC Image Asset
+// ---------------------------------------------------------------------------
+// Option A: Seamless AOI Export (Recommended for moderate-sized areas)
+cfg.toAsset(selected_ccdc, 'CCDC_S2_2020_2025_20m', {
+  region: aoi,
+  scale: cfg.SCALE.S2,
+  crs: cfg.DEFAULT_CRS,
   pyramidingPolicy: { '.default': 'sample' }
 });
+
+// Option B: Regional Tiling (for large jurisdictions or EECU memory management)
+// Define regional bounding boxes if sub-tiling is required:
+var tileBoxes = {
+  west_box:      ee.Geometry.Rectangle([124.0, -9.5, 125.2, -8.8]),
+  central_timor: ee.Geometry.Rectangle([125.0, -9.2, 126.2, -8.3]),
+  east_box:      ee.Geometry.Rectangle([126.0, -8.9, 127.4, -8.2])
+};
+
+// To export a specific sub-tile:
+// cfg.toAsset(selected_ccdc.clip(tileBoxes.west_box), 'CCDC_TL_2020_2025_20m_westbox', {
+//   region: tileBoxes.west_box,
+//   scale: cfg.SCALE.S2,
+//   crs: cfg.DEFAULT_CRS,
+//   pyramidingPolicy: { '.default': 'sample' }
+// });
 

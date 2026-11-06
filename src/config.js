@@ -4,9 +4,9 @@
  * Single source of truth for all project-level constants:
  *   - AOI, CRS, and export defaults
  *   - Seasonal fraction settings
- *   - 18-class land cover schema
+ *   - manually define classification scheme
  *   - Bayesian smoothing weights (canonical values)
- *   - CCDC tile asset IDs (Landsat and Sentinel-2)
+ *   - manually define CCDC assets
  *   - Shared export helpers (toAsset / toDrive)
  *
  * Usage in any pipeline script:
