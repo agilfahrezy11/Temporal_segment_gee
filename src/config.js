@@ -91,7 +91,7 @@ exports.TOL_YEARS = 1.0;
 /**
  * Canonical mapping of integer class ID -> class name string.
  * Used by classify_model.multiProbabilityClassification() and
- * Post-process.classifyFromProbs().
+ * post_process.classifyFromProbs().
  *
  * Do NOT redefine this in pipeline scripts — import it here.
  */
@@ -169,7 +169,7 @@ exports.CLASS_PALETTE = [
 // ---------------------------------------------------------------------------
 
 /**
- * Canonical per-class smoothness values for Post-process.bayesianSmooth().
+ * Canonical per-class smoothness values for post_process.bayesianSmooth().
  *
  * Higher values = stronger pull toward the spatial neighbourhood mean
  * (good for large homogeneous classes: Primary_forest, Waterbody).

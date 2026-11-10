@@ -96,7 +96,7 @@ Temporal_segment_gee/
 │   └── classification/
 │       ├── classify_model.js    # Multi-probability RF training & probability evaluation
 │       ├── tune_model.js        # Random Forest grid search hyperparameter tuning
-│       ├── Post-process.js      # Bayesian smoothing, SNIC OBIA, stability, hydrology rules
+│       ├── post_process.js      # Bayesian smoothing, SNIC OBIA, stability, hydrology rules
 │       ├── extract_split_data.js# Stratified train/test pixel extraction
 │       └── mask.js              # Ancillary environmental evidence layers
 ├── docs/
@@ -176,7 +176,7 @@ A single module that computes all candidate predictors:
 ### D. Classification & Spatial Post-Processing (`src/classification/`)
 - **`classify_model.js`**: Trains Random Forest in `MULTIPROBABILITY` mode, returning soft class probability rasters across all 18 classes, and evaluates test samples computing Log Loss, Cohen's Kappa, and per-class accuracies.
 - **`tune_model.js`**: Grid searches number of decision trees and split variables to prevent overfitting and identify optimal hyperparameters.
-- **`Post-process.js`**:
+- **`post_process.js`**:
   - `bayesianSmooth()`: Implements empirical Bayes spatial regularization (Camara et al., 2024 / *sits*), blending pixel probabilities with local neighborhood means based on per-class smoothness variance weights.
   - `computeStability()`: Computes winning class ($W$), runner-up class ($S$), Confusion Index ($CI = S / W$), and binary stability flag based on Malinverni & Sanità (2026).
   - `adaptiveBlend()`: Adaptively blends pixel-level probabilities with GEOBIA SNIC superpixel object-mean probabilities, dampening object weights where ambiguity or internal variance is high.

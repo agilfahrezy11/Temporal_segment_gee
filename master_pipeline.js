@@ -47,14 +47,14 @@ var cfg         = require(MODULE_ROOT + 'config');
 var feats       = require(MODULE_ROOT + 'features');
 var clf         = require(MODULE_ROOT + 'classify_model');
 var tuning      = require(MODULE_ROOT + 'tune_model');
-var post        = require(MODULE_ROOT + 'Post-process');
+var post        = require(MODULE_ROOT + 'post_process');
 var extraction  = require(MODULE_ROOT + 'extract_split_data');
 
-// Sensor and input modules
-var ccdcCore    = require(MODULE_ROOT + 'ccdc_core');
-var s2Inputs    = require(MODULE_ROOT + 'inputs_s2');
-var landsatInputs = require(MODULE_ROOT + 'inputs_landsat');
-var compInputs  = require(MODULE_ROOT + 'inputs_composite');
+// Sensor and input modules (can also use compatibility facades ccdc_sentinel2 / ccdc_landsat)
+var ccdcCore      = require(MODULE_ROOT + 'ccdc/core');
+var s2Inputs      = require(MODULE_ROOT + 'inputs/s2');
+var landsatInputs = require(MODULE_ROOT + 'inputs/landsat');
+var compInputs    = require(MODULE_ROOT + 'inputs/composite');
 
 // -------------------------------------------------------------------------
 // Pipeline Execution Mode Settings

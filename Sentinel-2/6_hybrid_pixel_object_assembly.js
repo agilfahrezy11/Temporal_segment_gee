@@ -1,6 +1,6 @@
 ///////// 1. Setup /////////
 var cfg = require('users/rg2icraf/Luma:config');
-var post = require('users/rg2icraf/Luma:Post-process');
+var post = require('users/rg2icraf/Luma:post_process');
 var testAOI = geometry;
 var MAX_SIZE = 1024;        // Larger limits create oversized tile neighborhoods.
 var USE_GUARD = false;      // true = extra within-object homogeneity guard
