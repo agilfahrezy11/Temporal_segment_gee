@@ -148,16 +148,31 @@ The pipeline maps an 18-class hierarchical schema specifically tuned for Timor-L
 
 ```
 Temporal_segment_gee/
+├── master_pipeline.js                    # Universal end-to-end master orchestrator
 ├── src/                                  # Reusable Earth Engine library modules
+│   ├── config.js                         # Central configuration, schemas, weights, export helpers
+│   ├── features.js                       # Sensor-agnostic feature engineering & index calculations
+│   ├── inputs/
+│   │   ├── s2.js                         # Sentinel-2 Harmonized L2A + Cloud Score+ ingestion
+│   │   ├── landsat.js                    # Landsat 5/7/8/9 Collection 2 SR ingestion & QA masking
+│   │   └── composite.js                  # Direct seasonal percentile/median compositing
 │   ├── ccdc/
-│   │   ├── ccdc_landsat.js               # Landsat 8/9 CCDC fit & synthetic reconstruction
-│   │   └── ccdc_sentinel2.js             # Sentinel-2 CCDC fit & seasonal stacks
+│   │   ├── core.js                       # Unified CCDC fitting, synthetic stacks & harmonics
+│   │   ├── ccdc_sentinel2.js             # Sentinel-2 CCDC facade (backward compatible)
+│   │   └── ccdc_landsat.js               # Landsat CCDC facade (backward compatible)
 │   └── classification/
 │       ├── classify_model.js             # Random Forest classifiers (hard/soft/multiprobability)
 │       ├── extract_split_data.js         # Stratified/random train-test sampling
 │       ├── tune_model.js                 # Hyperparameter grid search
-│       ├── Post-process.js               # Spatial Bayesian smoothing & MMU filters
+│       ├── post_process.js               # Spatial Bayesian smoothing, stability & OBIA blending
 │       └── mask.js                       # Ancillary water/built-up evidence masks
+│
+├── docs/                                 # Technical documentation & architecture guides
+│   ├── PIPELINE.md                       # Master execution pipeline & EECU optimization guide
+│   ├── CCDC_TEMPORAL_SEGMENTATION.md     # Detailed CCDC harmonic reconstruction math
+│   ├── DESIGN_IMPROVEMENT_PLAN.md        # Codebase modularization & deep module design plan
+│   ├── CLASSIFICATION_WORKFLOW.md        # Comprehensive multi-sensor operational context
+│   └── HYBRID_PIXEL_OBJECT_WORKFLOW.md   # Theoretical framework & mathematical formulation
 │
 ├── Sentinel-2/                           # Sentinel-2 pipeline scripts (GEE JavaScript)
 │   ├── 0_test_ccdc_s2.js                 # Sanity check: CCDC execution on small AOI
@@ -190,10 +205,6 @@ Temporal_segment_gee/
 │   ├── hybrid_assembly.py                # Reference streaming windowed assembly & stability map
 │   ├── raster_mosaic_stack.py            # Multiband raster stacking and mosaic generator
 │   └── object-pixel_assembly.ipynb       # Demonstration workflow walkthrough notebook
-│
-├── docs/                                 # Technical documentation & AI developer guides
-│   ├── CLASSIFICATION_WORKFLOW.md        # Comprehensive multi-sensor operational context
-│   └── HYBRID_PIXEL_OBJECT_WORKFLOW.md   # Theoretical framework & mathematical formulation
 │
 ├── SENTINEL2_CLASSIFICATION_WORKFLOW.md  # Step-by-step user guide for S2 end-to-end pipeline
 ├── .gitignore                            # Repository ignore rules

@@ -2,44 +2,22 @@
 TIME SERIES CLASSIFICATION ASSEMBLY without masked layer, temporal consistency
 */
 /////////1. Setup/////////
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry()
+var cfg = require('users/rg2icraf/Luma:config');
+var aoi = ee.FeatureCollection(cfg.AOI_ASSET).geometry();
 //post processing module
-var post = require('users/rg2icraf/Luma:post_process')
-var clf = require('users/rg2icraf/Luma:classify_model')
+var post = require('users/rg2icraf/Luma:post_process');
+var clf  = require('users/rg2icraf/Luma:classify_model');
 //Probability based land cover
 //dont forget to modified
-var lc_prob_2025 = ee.Image('projects/ee-rg2/assets/TL_Prob/LC_prob_2025_Landsat_TL').divide(10000)
-var lc_prob_2015 = ee.Image('projects/ee-rg2/assets/TL_Prob/LC_prob_2015_Landsat_TL').divide(10000)
-var lc_prob_2005 = ee.Image('projects/ee-rg2/assets/TL_Prob/LC_prob_2005_Landsat_TL').divide(10000)
+var lc_prob_2025 = ee.Image('projects/ee-rg2/assets/TL_Prob/LC_prob_2025_Landsat_TL').divide(10000);
+var lc_prob_2015 = ee.Image('projects/ee-rg2/assets/TL_Prob/LC_prob_2015_Landsat_TL').divide(10000);
+var lc_prob_2005 = ee.Image('projects/ee-rg2/assets/TL_Prob/LC_prob_2005_Landsat_TL').divide(10000);
 /////////2. Define Land Cover Class and Smoothing Parameter/////////
-//class name
-var class_bands = ee.List(['Primary_forest', 'Secondary_forest', 'Mangrove_forest' ,'Coastal_forest',
-                  'Teak_plantation', 'Eucalyptus_plantation', 'Coffe_agroforestry', 'Cocoa_agroforestry', 
-                  'Coconut_agroforestry', 'Mixed_garden', 'Paddy_field', 'Other_cropland', 'Grassland', 'Shrubland', 
-                  'Cleared_land', 'Built-up', 'Waterbody', 'Dry_riverbed']);
-
-var class_value = ee.List([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18])
-//Smoothing_parameter
-var smoothness = {
-  'Primary_forest': 4.5,       
-  'Secondary_forest': 4,    
-  'Mangrove_forest': 2.5,
-  'Coastal_forest': 2.7,
-  'Teak_plantation': 2,
-  'Eucalyptus_plantation': 1.5,
-  'Coffe_agroforestry': 2,   
-  'Cocoa_agroforestry': 1.7,
-  'Coconut_agroforestry': 2,
-  'Mixed_garden': 1.5,
-  'Paddy_field': 2.5,        
-  'Other_cropland': 2,
-  'Grassland': 2.5,
-  'Shrubland': 2.5,
-  'Cleared_land': 2,
-  'Built-up': 2,            
-  'Waterbody': 2,
-  'Dry_riverbed': 1.3         
-}
+//class name & values — sourced from cfg
+var class_bands = cfg.CLASS_BANDS;
+var class_value = cfg.CLASS_VALUES;
+//Smoothing_parameter — sourced from cfg
+var smoothness  = cfg.SMOOTHNESS;
 
 //Generate Land Cover 2025
 var landcover_2025_raw = post.classifyFromProbs(lc_prob_2025, class_bands, class_value);
@@ -67,13 +45,7 @@ var lc05 = lc_smooth_2005.where(lc_smooth_2005.eq(18), 17).toInt16();
 
 
 //Identify which the existing transition
-var names = {
-  1: 'Primary_forest', 2: 'Secondary_forest', 3: 'Mangrove_forest', 4: 'Coastal_forest',
-  5: 'Teak_plantation', 6: 'Eucalyptus_plantation', 7: 'Coffe_agroforestry',
-  8: 'Cocoa_agroforestry', 9: 'Coconut_agroforestry', 10: 'Mixed_garden',
-  11: 'Paddy_field', 12: 'Other_cropland', 13: 'Grassland', 14: 'Shrubland',
-  15: 'Cleared_land', 16: 'Built-up', 17: 'Waterbody'
-};
+var names = cfg.CLASS_SCHEMA;
 
 function topTransitions(lcA, lcB, region, mask, n) {
   // code = class in A * 100 + class in B, e.g. 201 = Secondary -> Primary

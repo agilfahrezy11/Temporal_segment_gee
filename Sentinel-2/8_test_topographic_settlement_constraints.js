@@ -23,8 +23,9 @@ var PRESETS = {
 // Choose test location: 'Comoro_Dili', 'Laclo_Manatuto', 'Lois_Liquica', 'Caraulun_Same'
 var ACTIVE_PRESET = 'Comoro_Dili';
 
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry();
-var CRS = 'EPSG:32751';
+var cfg = require('users/rg2icraf/Luma:config');
+var aoi = ee.FeatureCollection(cfg.AOI_ASSET).geometry();
+var CRS = cfg.CRS;
 
 // Topographic & Settlement thresholds
 var HAND_MAX_RIVER   = 2.5;   // Pixels <= 2.5m above nearest drainage line
@@ -46,14 +47,8 @@ if (PRESETS[ACTIVE_PRESET]) {
 // A. 2025 S2 Probability Asset (scaled 0 to 1)
 var lc_prob_2025 = ee.Image('projects/gee-v1-510606/assets/TL_S2_class_probabilities_2025').divide(10000);
 
-// B. SNIC Segments
-var pieces = [
-  ee.Image('projects/gee-v1-510606/assets/snic/seg_central_timor'),
-  ee.Image('projects/gee-v1-510606/assets/snic/seg_east_box'),
-  ee.Image('projects/gee-v1-510606/assets/snic/seg_off_dili'),
-  ee.Image('projects/gee-v1-510606/assets/snic/seg_west_box'),
-  ee.Image('projects/gee-v1-510606/assets/snic/seg_east_timor')
-];
+// B. SNIC Segments — sourced from cfg
+var pieces = cfg.S2_SNIC_TILES.map(function(id) { return ee.Image(id); });
 var ID_STRIDE = 300000000;
 var snic = ee.ImageCollection(pieces.map(function(img, i) {
   return img.select([0]).add(i * ID_STRIDE).toInt32();
@@ -93,23 +88,9 @@ var isRiverCorridor = meritHand.lte(HAND_MAX_RIVER)
 // =========================================================================
 // 4. HYBRID CLASSIFICATION (CLIENT-SAFE SERVER-SIDE ASSEMBLY)
 // =========================================================================
-var classBandNames = [
-  'Primary_forest',        'Secondary_forest',    'Mangrove_forest',
-  'Coastal_forest',        'Teak_plantation',     'Eucalyptus_plantation',
-  'Coffe_agroforestry',    'Cocoa_agroforestry',  'Coconut_agroforestry',
-  'Mixed_garden',          'Paddy_field',         'Other_cropland',
-  'Grassland',             'Shrubland',           'Cleared_land',
-  'Built-up',              'Waterbody',           'Dry_riverbed'
-];
-
-var classIdsList = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
-
-var smoothnessTL = {
-  'Primary_forest': 4.5, 'Secondary_forest': 3.0, 'Mangrove_forest': 3.0, 'Coastal_forest': 3.5,
-  'Teak_plantation': 1.2, 'Eucalyptus_plantation': 1.2, 'Coffe_agroforestry': 1.5, 'Cocoa_agroforestry': 1.5,
-  'Coconut_agroforestry': 1.5, 'Mixed_garden': 1.2, 'Paddy_field': 1.0, 'Other_cropland': 1.0,
-  'Grassland': 1.5, 'Shrubland': 1.5, 'Cleared_land': 1.5, 'Built-up': 1.0, 'Waterbody': 4.0, 'Dry_riverbed': 0.1
-};
+var classBandNames = cfg.CLASS_BANDS;
+var classIdsList   = cfg.CLASS_VALUES;
+var smoothnessTL   = cfg.SMOOTHNESS;
 
 var wList = classBandNames.map(function(name) {
   var s = smoothnessTL[name] || 1.0;

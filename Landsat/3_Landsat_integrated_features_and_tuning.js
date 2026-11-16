@@ -21,11 +21,13 @@
 // =========================================================================
 
 // Area of Interest (Timor-Leste + 10km buffer)
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry();
+var cfg         = require('users/rg2icraf/Luma:config');
+var aoi         = ee.FeatureCollection(cfg.AOI_ASSET).geometry();
 
 // Import required modules
 var spectral    = require('users/dmlmont/spectral:spectral');
 var ccdc_module = require('users/rg2icraf/Luma:ccdc_landsat');
+var feats       = require('users/rg2icraf/Luma:features');
 var extraction  = require('users/rg2icraf/Luma:extract_split_data');
 var clf         = require('users/rg2icraf/Luma:classify_model');
 var tuning      = require('users/rg2icraf/Luma:tune_model');
@@ -35,13 +37,9 @@ var post        = require('users/rg2icraf/Luma:post_process');
 // 2. Configuration & Hyperparameters
 // =========================================================================
 
-// Seasonal fraction settings
-var T = {
-  dry:  0.65,   // ~August (Peak dry season)
-  wet:  0.16,   // ~March (Peak wet season)
-  harm: 0.50    // Mid-year evaluation for nearest segment harmonics
-};
-var TOL = 1;    // Max tolerance in years for nearest segment lookup
+// Seasonal fraction settings — sourced from cfg
+var T   = cfg.T;
+var TOL = cfg.TOL_YEARS;
 
 // RFECV optimal features selected
 var landsat_wet_25 = ['B2_wet', 'B3_wet', 'B4_wet', 'B5_wet', 'B6_wet', 'B7_wet'];
@@ -75,49 +73,11 @@ var deltaIndexList = ['BLFEI', 'DBSI', 'MBI', 'MNDWI', 'MSAVI', 'NDMI'];
 // Target years to process
 var targetYears = [2025, 2015, 2005];
 
-// Class schema (18 classes)
-var classIdToName = {
-  1:  'Primary_forest',
-  2:  'Secondary_forest',
-  3:  'Mangrove_forest',
-  4:  'Coastal_forest',
-  5:  'Teak_plantation',
-  6:  'Eucalyptus_plantation',
-  7:  'Coffe_agroforestry',
-  8:  'Cocoa_agroforestry',
-  9:  'Coconut_agroforestry',
-  10: 'Mixed_garden',
-  11: 'Paddy_field',
-  12: 'Other_cropland',
-  13: 'Grassland',
-  14: 'Shrubland',
-  15: 'Cleared_land',
-  16: 'Built-up',
-  17: 'Waterbody',
-  18: 'Dry_riverbed'
-};
+// Class schema (18 classes) — sourced from cfg
+var classIdToName = cfg.CLASS_SCHEMA;
 
-// Bayesian smoothing parameters per class
-var smoothnessTL = {
-  'Primary_forest':        4.5,
-  'Secondary_forest':      3.0,
-  'Mangrove_forest':       3.0,
-  'Coastal_forest':        3.5,
-  'Teak_plantation':       1.2,
-  'Eucalyptus_plantation': 1.2,
-  'Coffe_agroforestry':    1.5,
-  'Cocoa_agroforestry':    1.5,
-  'Coconut_agroforestry':  1.5,
-  'Mixed_garden':          1.2,
-  'Paddy_field':           1.0,
-  'Other_cropland':        1.0,
-  'Grassland':             1.5,
-  'Shrubland':             1.5,
-  'Cleared_land':          0.5,
-  'Built-up':              0.2,
-  'Waterbody':             4.0,
-  'Dry_riverbed':          0.1
-};
+// Bayesian smoothing parameters per class — sourced from cfg
+var smoothnessTL = cfg.SMOOTHNESS;
 
 // Execution toggles
 var RUN_TUNING               = false; // Set to true to run RF grid search
@@ -131,58 +91,23 @@ var rfOptions = {
   seed:    42
 };
 
-// Export configuration
+// Export configuration — sourced from cfg
 var EXPORT_ASSET_PREFIX = 'projects/ee-rg2/assets/LC_prob_';
-var EXPORT_CRS          = 'EPSG:32751';
-var EXPORT_SCALE        = 30;
+var EXPORT_SCALE        = cfg.SCALE.Landsat;
 
 // =========================================================================
 // 3. Load CCDC Dataset (Unified 2000-2025 Mosaic)
 // =========================================================================
 
-// Load tiled CCDC products generated from Landsat CCDC pipeline (2000-2025)
-var img1 = ee.Image('projects/ee-agilfahrezy60/assets/Landsat_CCDC_TL/CCDC_2000_2025_central');
-var img2 = ee.Image('projects/ee-agilfahrezy60/assets/Landsat_CCDC_TL/CCDC_2000_2025_east_timor');
-var img3 = ee.Image('projects/ee-agilfahrezy60/assets/Landsat_CCDC_TL/CCDC_2000_2025_eastbox');
-var img4 = ee.Image('projects/ee-agilfahrezy60/assets/Landsat_CCDC_TL/CCDC_2000_2025_off_dili');
-var img5 = ee.Image('projects/ee-agilfahrezy60/assets/Landsat_CCDC_TL/CCDC_2000_2025_westbox');
-
-// Combine into a single seamless mosaic clipped to AOI
-var landsat_ccdc = ee.ImageCollection([img1, img2, img3, img4, img5]).mosaic().clip(aoi);
+// Load tiled CCDC products — asset IDs sourced from cfg
+var landsat_ccdc = cfg.loadCCDCTiles(cfg.LANDSAT_CCDC_TILES, aoi);
 
 // Coefficient scale for custom Landsat CCDC run (0-10,000 range)
-var CCDC_COEF_SCALE = 10000;
+var CCDC_COEF_SCALE = cfg.CCDC_COEF_SCALE.own;
 
 // =========================================================================
 // 4. Feature Engineering Functions (EECU-Optimized)
 // =========================================================================
-
-/**
- * Computes required spectral indices on an already reconstructed synthetic image.
- */
-function computeIndicesFromSynth(synthImg, suffix) {
-  var imgForIndices = synthImg.select(
-    ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'],
-    ['B2',   'B3',    'B4',  'B5',  'B6',    'B7']
-  );
-  var param = {
-    'B':  imgForIndices.select('B2'),
-    'G':  imgForIndices.select('B3'),
-    'R':  imgForIndices.select('B4'),
-    'N':  imgForIndices.select('B5'),
-    'S1': imgForIndices.select('B6'),
-    'S2': imgForIndices.select('B7'),
-    'C1': 6.0,
-    'C2': 7.5,
-    'g':  2.5,
-    'L':  1.0
-  };
-  var computed = spectral.computeIndex(imgForIndices, baseIndexList, param);
-  var renamed = computed.bandNames().map(function(b) {
-    return ee.String(b).cat('_').cat(suffix);
-  });
-  return computed.rename(renamed);
-}
 
 /**
  * Builds the complete RFECV optimal feature stack for a given target year.
@@ -204,16 +129,11 @@ function buildYearFeatures(ccdc, year, tol, coefScale) {
   );
 
   // 3. Compute spectral indices directly from existing synthetic stacks
-  var wetIndices = computeIndicesFromSynth(synthWet, 'wet');
-  var dryIndices = computeIndicesFromSynth(synthDry, 'dry');
+  var wetIndices = feats.computeSeasonalIndices(synthWet, 'Landsat', baseIndexList, 'wet');
+  var dryIndices = feats.computeSeasonalIndices(synthDry, 'Landsat', baseIndexList, 'dry');
 
   // 4. Compute phenological seasonal deltas (wet - dry)
-  var deltaImages = deltaIndexList.map(function(idx) {
-    return wetIndices.select(idx + '_wet')
-      .subtract(dryIndices.select(idx + '_dry'))
-      .rename(idx + '_delta');
-  });
-  var deltaIndices = ee.Image.cat(deltaImages);
+  var deltaIndices = feats.computePhenologicalDeltas(wetIndices, dryIndices, deltaIndexList);
 
   // 5. CCDC Harmonics (NIR, RED, SWIR1)
   var harmImgs = ccdc_module.getHarmonics(ccdc, year + T.harm, ['NIR', 'RED', 'SWIR1'], tol, coefScale);
@@ -391,15 +311,10 @@ var probYears = [
 
 probYears.forEach(function(item) {
   var exportImg = item.image.multiply(10000).round().toUint16();
-  
-  Export.image.toAsset({
-    image:            exportImg,
+  cfg.toAsset(exportImg, EXPORT_ASSET_PREFIX + item.year + '_Landsat_TL', {
     description:      'smoothed_probabilities_' + item.year + '_TL',
-    assetId:          EXPORT_ASSET_PREFIX + item.year + '_Landsat_TL',
     region:           aoi,
     scale:            EXPORT_SCALE,
-    crs:              EXPORT_CRS,
-    maxPixels:        1e13,
     pyramidingPolicy: {'.default': 'mean'}
   });
 });

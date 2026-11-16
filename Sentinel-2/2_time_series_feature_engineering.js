@@ -1,20 +1,15 @@
 //Timor leste AOI
-var aoi = ee.FeatureCollection('projects/ee-rg2v2/assets/AOI_Timor_Leste_10km').geometry()
+var cfg   = require('users/rg2icraf/Luma:config');
+var feats = require('users/rg2icraf/Luma:features');
+var aoi   = ee.FeatureCollection(cfg.AOI_ASSET).geometry();
 
 /////////1. CCDC spatiotemporal features/////////
 //CCDC source code
 var ccdcModule = require('users/rg2icraf/Luma:ccdc_sentinel2');
 
-//define CCDC assets
-var tl_ccdc1 = ee.Image('projects/ee-rg2v2/assets/CCDC_TL_2020_2025_20m_westbox')
-var tl_ccdc2 = ee.Image('projects/earth-engine-v1-504707/assets/CCDC_TL_2020_2025_20m_east-timor')
-var tl_ccdc3 = ee.Image('projects/earth-engine-v1-504707/assets/CCDC_TL_2020_2025_20m_off_dili')
-var tl_ccdc4 = ee.Image('projects/gee-v1-510606/assets/CCDC_TL_2020_2025_20m_central-timor')
-var tl_ccdc5 = ee.Image('projects/earth-engine-v1-504707/assets/CCDC_TL_2020_2025_20m_east_box')
-
-//combine them into a single mosaic
-var ccdc_mosaic = ee.ImageCollection([tl_ccdc1, tl_ccdc2, tl_ccdc3, tl_ccdc4, tl_ccdc5]).mosaic();
-print(ccdc_mosaic)
+//define CCDC assets — sourced from cfg
+var ccdc_mosaic = cfg.loadCCDCTiles(cfg.S2_CCDC_TILES, aoi);
+print(ccdc_mosaic);
 //define target year
 var targetYears = [2020, 2025];
 var fractionOfYear = 0.5;
@@ -52,33 +47,10 @@ var index3 = ee.Image('projects/ee-rg2/assets/distance_TL_additional_index_TL').
 var index_stack = ee.Image.cat([index1, index2, index3])
 
 //C. Radar backscatter
-//generate seasonal radar backscatter for 2020
-function getSeasonalS1(year, roi) {
-  var startDate = ee.Date.fromYMD(year, 1, 1);
-  var endDate   = ee.Date.fromYMD(year, 12, 31);
-
-  var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
-    .filterBounds(roi)
-    .filterDate(startDate, endDate)
-    .filter(ee.Filter.eq('instrumentMode', 'IW'))
-    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
-    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
-    .select(['VV', 'VH']);
-
-  //Monsoonal Splitting
-  var wet = s1.filter(ee.Filter.calendarRange(12, 4, 'month')).median();
-  var dry = s1.filter(ee.Filter.calendarRange(5, 11, 'month')).median();
-  //Rename base bands
-  var vv_wet = wet.select('VV').rename('VV_wet');
-  var vh_wet = wet.select('VH').rename('VH_wet');
-
-  var vv_dry = dry.select('VV').rename('VV_dry');
-  var vh_dry = dry.select('VH').rename('VH_dry');
-  return ee.Image.cat([vh_dry, vh_wet, vv_dry, vv_wet]);
-} 
 //since 2025 already in asset
-var s1_seasonal_2025 = ee.Image('projects/ee-v2-508913/assets/s1_seasonal_tl_25')
-var s1_seasonal_2020 = getSeasonalS1(2020, aoi).clip(aoi);
+var s1_seasonal_2025 = ee.Image('projects/ee-v2-508913/assets/s1_seasonal_tl_25');
+//2020 — sourced from feats
+var s1_seasonal_2020 = feats.getSeasonalS1(2020, aoi);
 
 /////////3. NIR HARMONICS FROM THE ACTIVE SEGMENT, PER TARGET DATE/////////
 function nirHarmonics(ccdcImg, t) {
