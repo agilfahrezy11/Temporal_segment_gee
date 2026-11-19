@@ -14,13 +14,21 @@
  *   var aoi = ee.FeatureCollection(cfg.AOI_ASSET).geometry();
  *   cfg.toAsset(myImage, 'projects/.../assets/my_output', { scale: 20, region: aoi });
  * =========================================================================
+ * Configure the following parameters according to different mapping projects:
+ *  - DEFAULT_AOI_ASSET
+ *  - DEFAULT_CRS
+ *  - SCALE (adjust according to sensor and output)
+ *  - CLASS_SCHEMA
+ *  - SMOOTHNESS (class weight smoothing)
+ *  - LANDSAT_CCDC_TILES
+ *  - S2_CCDC_TILES
+ *  - S2_SNIC_TILES
  */
 
 // ---------------------------------------------------------------------------
 // 1. Study Area / AOI Configuration
-// ---------------------------------------------------------------------------
 
-/** Default/Example GEE asset path for AOI (Timor-Leste 10km buffer). */
+/** Example GEE asset path for AOI  */
 exports.DEFAULT_AOI_ASSET = 'projects/ee-rg2v2/assets/AOI_Timor_Leste_10km';
 exports.AOI_ASSET = exports.DEFAULT_AOI_ASSET;
 
@@ -46,7 +54,6 @@ exports.getAOI = function(aoiInput) {
 
 // ---------------------------------------------------------------------------
 // 2. Export Defaults
-// ---------------------------------------------------------------------------
 
 /** Default Coordinate reference system. Override via options.crs in toAsset/toDrive if needed. */
 exports.DEFAULT_CRS = 'EPSG:32751';
@@ -60,14 +67,13 @@ exports.MAX_PIXELS = 1e13;
  * Pass the appropriate value to toAsset() / toDrive() via options.scale.
  */
 exports.SCALE = {
-  S2:      20,   // Sentinel-2 (standard processing scale)
-  S2_fine: 10,   // Sentinel-2 native fine resolution
+  S2:      20,   // Sentinel-2 (resample to 20m)
+  S2_fine: 10,   // Sentinel-2 (fine resolution)
   Landsat: 30    // Landsat 30m resolution
 };
 
 // ---------------------------------------------------------------------------
 // 3. Seasonal Fractions (fractional year format: YYYY.fff)
-// ---------------------------------------------------------------------------
 
 /**
  * Fractional-year offsets added to a target year integer to produce the
@@ -86,14 +92,12 @@ exports.TOL_YEARS = 1.0;
 
 // ---------------------------------------------------------------------------
 // 4. Land Cover Class Schema (18 classes)
-// ---------------------------------------------------------------------------
 
 /**
  * Canonical mapping of integer class ID -> class name string.
  * Used by classify_model.multiProbabilityClassification() and
  * post_process.classifyFromProbs().
  *
- * Do NOT redefine this in pipeline scripts — import it here.
  */
 exports.CLASS_SCHEMA = {
   1:  'Primary_forest',
@@ -141,7 +145,7 @@ exports.CLASS_VALUES = (function() {
 
 /**
  * Canonical colour palette for map visualisation, indexed to CLASS_VALUES.
- * Use with: { min: 1, max: 18, palette: cfg.CLASS_PALETTE }
+ * example usage: { min: 1, max: 18, palette: cfg.CLASS_PALETTE }
  */
 exports.CLASS_PALETTE = [
   '#00441B', // 1  Primary_forest
@@ -161,7 +165,7 @@ exports.CLASS_PALETTE = [
   '#d7d6d6', // 15 Cleared_land
   '#DB310D', // 16 Built-up
   '#0e8acc', // 17 Waterbody
-  '#9ECAE1'  // 18 Dry_riverbed
+  '#9ECAE1'  // 18 Dry_riverbedW
 ];
 
 // ---------------------------------------------------------------------------
@@ -174,18 +178,7 @@ exports.CLASS_PALETTE = [
  * Higher values = stronger pull toward the spatial neighbourhood mean
  * (good for large homogeneous classes: Primary_forest, Waterbody).
  * Lower values = trust the pixel-level RF probability more
- * (good for small or spectrally ambiguous classes: Dry_riverbed, Built-up).
- *
- * Reconciliation note — four versions of this dict existed across pipeline
- * scripts with diverged values. These are the calibrated values from
- * Sentinel-2/5_end-to-end_sentinel-2.js (most recent, highest-resolution run).
- * The main differences from older scripts:
- *   Cleared_land:     0.5  (was 2.0 in Landsat/4_Landsat_classification_assembly.js)
- *   Built-up:         0.2  (was 1.0–2.0 in older scripts)
- *   Secondary_forest: 3.0  (was 4.0 in Landsat/4_Landsat_classification_assembly.js)
- *   Waterbody:        4.0  (was 1.5–2.0 in older scripts)
- * If you are applying to Landsat outputs and need different weights,
- * override individual keys in the calling script rather than copying the dict.
+ * (good for small or spectrally ambiguous classes: cleared land, Built-up).
  */
 exports.SMOOTHNESS = {
   'Primary_forest':        4.5,
@@ -210,12 +203,9 @@ exports.SMOOTHNESS = {
 
 // ---------------------------------------------------------------------------
 // 6. CCDC Tile Asset IDs
-// ---------------------------------------------------------------------------
 
 /**
- * Five-tile Landsat CCDC mosaic (2000–2025, 30 m).
- * Load and merge with: cfg.loadCCDCTiles(cfg.LANDSAT_CCDC_TILES, aoi)
- * — or directly via features.loadCCDCMosaic() once src/features.js exists.
+ * Example of Landsat CCDC tiles (30m)
  */
 exports.LANDSAT_CCDC_TILES = [
   'projects/ee-agilfahrezy60/assets/Landsat_CCDC_TL/CCDC_2000_2025_central',
@@ -226,8 +216,7 @@ exports.LANDSAT_CCDC_TILES = [
 ];
 
 /**
- * Five-tile Sentinel-2 CCDC mosaic (2020–2025, 20 m).
- * Spans three GEE project namespaces — do not edit unless re-exporting tiles.
+ * Example of Sentinel-2 CCCDC tiles (20m)
  */
 exports.S2_CCDC_TILES = [
   'projects/ee-rg2v2/assets/CCDC_TL_2020_2025_20m_westbox',
@@ -238,8 +227,7 @@ exports.S2_CCDC_TILES = [
 ];
 
 /**
- * Five-tile SNIC superpixel segment assets (Sentinel-2, 10 m).
- * Required by the hybrid pixel-object assembly script.
+ * Example of Segmentations via SNIC in earth engine
  */
 exports.S2_SNIC_TILES = [
   'projects/gee-v1-510606/assets/snic/seg_central_timor',

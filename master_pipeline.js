@@ -1,45 +1,38 @@
 /**
  * =========================================================================
- * SCRIPT: master_pipeline.js
- * PROJECT: Luma Geospatial Engine - Land Use / Land Cover Mapping
+ * PROJECT: Multiyear Land Use / Land Cover Mapping
  * 
  * DESCRIPTION:
  * Universal Master Execution Pipeline for Multi-Temporal LULC Classification.
  * Orchestrates the end-to-end workflow from raw observations or CCDC temporal
- * segments to publication-grade thematic maps and probability rasters.
+ * segments 
  * 
  * CAPABILITIES:
- *  1. Multi-Sensor: Sentinel-2 (10-20m) or Landsat (30m)
+ *  1. Multi-Sensor: Sentinel-2 (10-20m) or Landssat (30m)
  *  2. Dual Temporal Modes:
  *     - 'ccdc'      : Harmonic synthetic evaluation at wet/dry seasonal fractions
  *     - 'composite' : Direct cloud-masked seasonal percentile/median composites
  *  3. Integrated Covariates:
- *     - Optical seasonal bands (wet & dry)
- *     - Multi-spectral indices & phenological deltas (wet - dry)
- *     - GLCM textural metrics (dry-season NIR)
+ *     - Optical seasonal bands 
+ *     - Multi-spectral indices & phenological deltas 
+ *     - GLCM textural metrics 
  *     - SAR backscatter (Sentinel-1 seasonal VV/VH, ALOS PALSAR/ScanSAR)
- *     - Multi-scale topography (Elevation, slope, aspect, TPI landform, TWI)
+ *     - Topography (Elevation, slope, aspect, TPI landform, TWI)
  *     - CCDC harmonics (amplitude & phase for NIR, Red, SWIR1)
- *  4. Machine Learning & Uncertainty:
+ *  4. Machine Learning 
  *     - Stratified sample train/validation splitting
  *     - Optional Random Forest hyperparameter grid search
- *     - Multi-probability Random Forest classifier (soft class probabilities)
- *     - Rigorous test set evaluation (Accuracy, Log Loss, Confusion Matrix)
+ *     - Multi-probability Random Forest classifier
+ *     - Rigorous test set evaluation 
  *  5. Spatial Regularization & Post-Processing:
- *     - Empirical Bayes spatial smoothing (Camara et al., 2024 / sits)
+ *     - Empirical Bayes spatial smoothing
  *     - GEOBIA SNIC superpixel clustering & adaptive stability blending
- *     - Intrinsic rule-based hydrology/urban refinement
- *  6. Export Pipeline:
- *     - Pre-configured pyramiding policies ('mean' for probs, 'mode' for LULC, 'sample' for segments)
- *     - Cloud-Optimized GeoTIFF (COG) Drive exports and GEE Asset exports
- * =========================================================================
  */
 
 // =========================================================================
-// 1. PROJECT CONFIGURATION & PARAMETERS (CUSTOMIZE HERE)
-// =========================================================================
+// 1. PROJECT CONFIGURATION & PARAMETERS
 
-// Module repository path prefix (adjust to your GEE account/repository)
+// Module repository path prefix
 var MODULE_ROOT = 'users/rg2icraf/Luma:';
 
 // Import core modules
@@ -79,7 +72,7 @@ var EXPORT_TABLE_SAMPLES     = false; // Export extracted sample CSV for offline
 // -------------------------------------------------------------------------
 // Geographic & Data Assets
 // -------------------------------------------------------------------------
-// Area of Interest (pass null to use project default AOI from cfg)
+// Area of Interest 
 var USER_AOI = null;
 var aoi = cfg.getAOI(USER_AOI);
 
@@ -102,10 +95,11 @@ var SMOOTHNESS   = cfg.SMOOTHNESS;
 var CCDC_ASSET = null; 
 
 // Spectral indices to compute
-var BASE_INDICES = ['BLFEI', 'DBSI', 'GBNDVI', 'MBI', 'MNDWI', 'MSAVI', 'NDMI', 'NDVI'];
+var BASE_INDICES = ['BLFEI', 'DBSI', 'GBNDVI', 'MBI', 'sMNDWI', 'MSAVI', 'NDMI', 'NDVI'];
 var DELTA_INDICES = ['BLFEI', 'DBSI', 'MBI', 'MNDWI', 'MSAVI', 'NDMI'];
 
 // Optional: Optimized feature subset from RFECV (set null to use all candidate features)
+//RFE is run outside the main code
 var FEATURE_SUBSET = (SENSOR === 'S2') ? [
   'B11_dry', 'B11_wet', 'B12_dry', 'B12_wet', 'B2_dry', 'B2_wet',
   'B3_dry', 'B3_wet', 'B4_dry', 'B4_wet', 'B8_dry', 'B8_wet',
@@ -380,7 +374,7 @@ TARGET_YEARS.forEach(function(yr) {
         riverbedId: 18,
         waterbodyId: 17,
         clearedLandId: 15,
-        mergeRiverbed: MERGE_WATER_RIVERBED
+        mergeRiverbed: MERGE_WATER_RIVERBED //special case for Timor Leste
       }
     );
   } else if (MERGE_WATER_RIVERBED) {
@@ -422,6 +416,7 @@ TARGET_YEARS.forEach(function(yr) {
         crs: CRS
       });
     }
+    //modified the asset path accordinly
     if (EXPORT_TO_ASSET) {
       cfg.toAsset(scaledProbs, 'projects/gee-v1-510606/assets/' + prefix + '_probabilities', {
         region: aoi,
